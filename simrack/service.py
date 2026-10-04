@@ -15,10 +15,11 @@ import time
 from typing import Callable
 
 from . import fabric
+from .access import Access, describe
 from .config import Settings
 from .console import SerialConsole, mist_lines
 from .console import adopt as console_adopt
-from .errors import BackendError, GuardrailViolation, LabError, NotConfigured, NotFound
+from .errors import BackendError, GuardrailViolation, LabError, NotFound
 from .guardrails import Guardrails
 from .mist import MistClient
 from .models import Link, MistSnapshot, Node, Sandbox, check_name, check_port
@@ -118,7 +119,8 @@ class SandboxManager:
     ) -> None:
         self.settings = settings or Settings()
         self.proxmox = proxmox or ProxmoxClient(self.settings)
-        self.mist = mist or MistClient(self.settings)
+        self.mist = mist or MistClient(self.settings, write_gate=lambda: self.access.mist_refusal())
+        self.access = Access(self.settings, self.proxmox, self.mist)
         self.guard = Guardrails(self.settings)
         self.clock = clock
         self.state_dir = self.settings.state_dir
@@ -128,6 +130,15 @@ class SandboxManager:
         self._secret_lock = threading.Lock()
         self._load()
         self._load_shapes()
+
+    def use(self, settings: Settings) -> None:
+        """Take new settings from the setup page without a restart."""
+        self.settings = settings
+        self.guard = Guardrails(settings)
+        self.proxmox.use(settings)
+        self.mist.use(settings)
+        self.access.settings = settings
+        self.access.forget()
 
     # -- persistence ------------------------------------------------------------
 
@@ -190,7 +201,7 @@ class SandboxManager:
             return password
 
     def reveal_root_password(self, sandbox: Sandbox) -> dict:
-        """Read-only on purpose: the operator needs it to log in even when writes are off."""
+        """Read-only on purpose: the operator needs it to log in even when SimRack may not change the lab."""
         return {"user": "root", "root_password": self._root_password(sandbox)}
 
     def _forget_secret(self, name: str) -> None:
@@ -201,6 +212,11 @@ class SandboxManager:
 
     def _mist_snapshot_dir(self, name: str) -> str:
         return os.path.join(self.state_dir, "mist-snapshots", check_name(name, "sandbox name"))
+
+    def set_paused(self, paused: bool) -> dict:
+        """Stop or resume every change. Pausing changes nothing in the lab, so it is always allowed."""
+        self.access.set_paused(paused)
+        return {"paused": self.access.paused()}
 
     def get(self, name: str) -> Sandbox:
         try:
@@ -277,6 +293,7 @@ class SandboxManager:
         except (BackendError, LabError) as error:
             inventory_error = error.message
             vms = []
+        lab_refusal, mist_refusal = self.access.lab_refusal(), self.access.mist_refusal()
         return {
             "generated_at": self.clock(),
             "production": {
@@ -297,14 +314,17 @@ class SandboxManager:
             "shapes": self.list_shapes(),
             "mist": {
                 "configured": self.mist.configured(),
-                "writes_enabled": self.mist.writes_enabled(),
+                "writes_enabled": mist_refusal is None,
+                "read_only_reason": describe(mist_refusal),
                 "api_base": self.settings.mist_api_base,
             },
             "templates": self._list_templates(),
             "images": self._list_images(),
-            "writes_enabled": self.settings.allow_writes,
-            "read_only_reason": " ".join(self.guard.read_only_reason() or ()),
+            "writes_enabled": lab_refusal is None,
+            "read_only_reason": describe(lab_refusal),
+            "paused": self.access.paused(),
             "profile": {"loaded": bool(self.settings.profile_path), "path": self.settings.profile_path},
+            "assistants": {"risky": self.settings.assistant_risky},
         }
 
     def _list_images(self) -> list[dict]:
@@ -344,7 +364,7 @@ class SandboxManager:
         image: str | None = None,
     ) -> Sandbox:
         """Build a sandbox from a recipe. The live lab is never referenced."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         check_name(name, "sandbox name")
         if name in self.sandboxes:
             raise GuardrailViolation(f"Sandbox {name} already exists.", detail="Use a different name or tear it down first.")
@@ -399,7 +419,7 @@ class SandboxManager:
         """Build a sandbox shaped like an imported fabric: one vJunos per ticked
         switch, cabled port for port. Cables a sandbox cannot carry are left out
         and listed in ``dropped``. Everything is checked before anything is made."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         check_name(name, "sandbox name")
         if name in self.sandboxes:
             raise GuardrailViolation(f"Sandbox {name} already exists.", detail="Use a different name or tear it down first.")
@@ -475,7 +495,7 @@ class SandboxManager:
         save: bool = True,
     ) -> Node:
         """Add one guest: a clone of the vJunos template, or a boot from an image."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         check_name(name, "node name")
         template_vmid = self.guard.check_template(template_vmid)
         if any(n.name == name for n in sandbox.nodes):
@@ -677,7 +697,10 @@ class SandboxManager:
 
     def ensure_bridges(self) -> list[str]:
         """Sandbox bridges are not persistent; put back any a host reboot removed.
-        The park bridge comes first: no switch can start without it."""
+        The park bridge comes first: no switch can start without it.
+        Puts back nothing while the lab may not change."""
+        if self.access.lab_refusal() is not None:
+            return []
         made = []
         wanted = []
         if any(node.kind in PORT_KINDS for sandbox in self.sandboxes.values() for node in sandbox.nodes):
@@ -694,7 +717,7 @@ class SandboxManager:
         return made
 
     def delete_node(self, sandbox: Sandbox, name: str, *, purge: bool = True) -> None:
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         node = self.guard.check_node_is_sandbox(sandbox, name)
         for link in [cable for cable in sandbox.links if name in (cable.a_node, cable.b_node)]:
             self.remove_cable(sandbox, link.bridge, save=False)
@@ -708,7 +731,7 @@ class SandboxManager:
 
     def set_power(self, sandbox: Sandbox, name: str, action: str, *, save: bool = True) -> dict:
         """Bring a sandbox switch up or down without touching Proxmox by hand."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         node = self.guard.check_node_is_sandbox(sandbox, name)
         running = self.proxmox.vm_status(node.vmid).get("status") == "running"
         if action == "start" and node.kind == "switch" and not running:
@@ -778,7 +801,7 @@ class SandboxManager:
         save: bool = True,
     ) -> Link:
         """Plug a cable in. Creates the MTU 9216 bridge and moves both NICs."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         check_port(a_port)
         check_port(b_port)
         self._check_port_in_range(a_port)
@@ -836,7 +859,7 @@ class SandboxManager:
         is in and puts it in ge-0/0/1. Pass ``from_node`` to move a specific end
         when the target node is not on this cable.
         """
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         self.guard.check_bridge(bridge)
         link = next((cable for cable in sandbox.links if cable.bridge == bridge), None)
         if link is None:
@@ -917,7 +940,7 @@ class SandboxManager:
         return {"link": link.to_dict(), "moved_from": f"{moving.name} {moving_port}", "moved_to": f"{to_node} {to_port}"}
 
     def remove_cable(self, sandbox: Sandbox, bridge: str, *, save: bool = True) -> None:
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         self.guard.check_bridge(bridge)
         link = next((cable for cable in sandbox.links if cable.bridge == bridge), None)
         if link is None:
@@ -934,7 +957,7 @@ class SandboxManager:
 
     def snapshot(self, sandbox: Sandbox, label: str) -> dict:
         """Proxmox-side revert point. Call before anything risky."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         label = re.sub(r"[^a-zA-Z0-9_-]", "-", label)[:40]
         taken = {}
         for node in sandbox.nodes:
@@ -946,7 +969,7 @@ class SandboxManager:
 
     def revert(self, sandbox: Sandbox, label: str) -> dict:
         """The revert button: put every sandbox guest back on a known-good state."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         record = sandbox.proxmox_snapshots.get(label)
         if record is None:
             raise NotFound(
@@ -975,10 +998,11 @@ class SandboxManager:
 
     def mist_create_site(self, sandbox: Sandbox) -> dict:
         """Every sandbox gets its own Mist site. That is guardrail #1."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         self.guard.check_site(sandbox.mist_site_id)
         if sandbox.mist_site_id:
             return {"site_id": sandbox.mist_site_id, "site_name": sandbox.mist_site_name, "created": False}
+        self.access.check_mist()
         site = self.mist.create_site(sandbox.mist_site_name or f"{sandbox.name}-site")
         sandbox.mist_site_id = site.get("id")
         sandbox.mist_site_name = site.get("name", sandbox.mist_site_name)
@@ -1033,17 +1057,8 @@ class SandboxManager:
         """Make the sandbox's Mist site match its cables: networks, VRF and root password
         on the site, every switch managed by Mist, and an EVPN topology with a link and a
         fabric port for each cable. Mist is snapshotted first, so Revert undoes it."""
-        self.guard.check_writes_enabled()
-        if not self.mist.configured():
-            raise NotConfigured(
-                "Mist API token is not set.",
-                detail="Export MIST_TOKEN in the service environment to build fabrics in Mist.",
-            )
-        if not self.mist.writes_enabled():
-            raise GuardrailViolation(
-                "Mist writes are disabled.",
-                detail="Set SIMRACK_MIST_WRITES=1 to let the front end build fabrics in Mist.",
-            )
+        self.access.check_lab()
+        self.access.check_mist()
         site_id = self._require_site(sandbox)
         recipe = sandbox.recipe
         switches = [n for n in sandbox.nodes if n.kind in PORT_KINDS]
@@ -1207,7 +1222,8 @@ class SandboxManager:
 
     def mist_revert(self, sandbox: Sandbox, label: str) -> dict:
         """Put Mist back the way the snapshot found it."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
+        self.access.check_mist()
         record = sandbox.mist_snapshots.get(label)
         if record is None:
             raise NotFound(
@@ -1303,7 +1319,7 @@ class SandboxManager:
     # Only the Proxmox side is ever fixed, and only when writes are on.
 
     def fabric_check(self, sandbox: Sandbox) -> dict:
-        repair = bool(self.settings.allow_writes)
+        repair = self.access.lab_refusal() is None
         notes: list[str] = []
         nodes = {n.name: n for n in sandbox.nodes}
         configs: dict[int, dict | None] = {}
@@ -1326,7 +1342,7 @@ class SandboxManager:
                 sandbox.notes.append(f"Check cabling made the park bridge {park} again")
             else:
                 park_missing = True
-                notes.append(f"The park bridge {park} is missing, so the switches cannot start. Turn writes on and check again to make it.")
+                notes.append(f"The park bridge {park} is missing, so the switches cannot start. {self.access.lab_refusal()} Check again once SimRack may change the lab, and it makes the bridge.")
 
         rows = [self._check_cable(sandbox, link, nodes, config, repair) for link in sandbox.links]
         parked, missing = self._check_strays(sandbox, config, repair)
@@ -1569,16 +1585,13 @@ class SandboxManager:
         """Join one sandbox switch to the sandbox's Mist site over its serial console:
         root password, SSH, host name, DHCP on fxp0 and the Mist lines, one commit.
         Everything is checked before Mist is asked or the console is touched."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         node = self.guard.check_node_is_sandbox(sandbox, name)
         if node.kind != "switch":
             raise GuardrailViolation(f"{name} is not a switch.", detail="Only vJunos switches join a Mist site.")
         if self.proxmox.vm_status(node.vmid).get("status") != "running":
             raise GuardrailViolation(f"{name} is not running.", detail="Start it and give Junos a few minutes to boot.")
-        if not self.mist.configured():
-            raise NotConfigured("Mist is not configured.", detail="Set MIST_TOKEN to adopt switches.")
-        if not self.mist.writes_enabled():
-            raise GuardrailViolation("Mist writes are off.", detail="Set SIMRACK_MIST_WRITES=1 to adopt switches.")
+        self.access.check_mist()
         site_id = self._require_site(sandbox)
         path = os.path.join(self.settings.serial_dir, f"{node.vmid}.serial0")
         if console is None and not os.path.exists(path):
@@ -1610,14 +1623,9 @@ class SandboxManager:
 
     # -- teardown ---------------------------------------------------------------
 
-    def teardown(self, sandbox: Sandbox, *, keep_mist: bool = False, confirm: bool = False) -> dict:
+    def teardown(self, sandbox: Sandbox, *, keep_mist: bool = False) -> dict:
         """Undo a whole sandbox. The live lab is never in scope."""
-        self.guard.check_writes_enabled()
-        if not confirm:
-            raise GuardrailViolation(
-                "Teardown needs confirm=true.",
-                detail=f"This deletes {len(sandbox.nodes)} guest(s) and {len(sandbox.links)} bridge(s).",
-            )
+        self.access.check_lab()
         removed = {"nodes": [], "bridges": [], "mist_site": None, "complete": True, "failed": []}
         # Guests first: deleting them drops their taps, so no NIC hot-unplug is needed.
         for node in list(sandbox.nodes):
@@ -1649,6 +1657,7 @@ class SandboxManager:
         if sandbox.mist_site_id and not keep_mist:
             try:
                 self.guard.check_site(sandbox.mist_site_id)
+                self.access.check_mist()
                 self.mist.delete_site(sandbox.mist_site_id)
                 removed["mist_site"] = sandbox.mist_site_name
             except LabError as error:
@@ -1666,7 +1675,7 @@ class SandboxManager:
 
     def console_command(self, sandbox: Sandbox, name: str, command: str, *, settle: float = 1.0) -> str:
         """Send a command to a guest's serial console (used for Mist adoption)."""
-        self.guard.check_writes_enabled()
+        self.access.check_lab()
         if not command.strip() or len(command) > 2000:
             raise GuardrailViolation("Console command must be 1-2000 characters.")
         node = self.guard.check_node_is_sandbox(sandbox, name)

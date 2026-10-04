@@ -11,7 +11,7 @@ from __future__ import annotations
 import unittest
 
 from simrack.errors import GuardrailViolation
-from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
+from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager, proxmox_may_only_look
 
 
 class TestCustomerIsolation(unittest.TestCase):
@@ -51,7 +51,7 @@ class TestCustomerIsolation(unittest.TestCase):
         self.manager.set_power(sandbox, "sbx-acc-03", "shutdown")
         self.manager.snapshot(sandbox, "checkpoint")
         self.manager.mist_revert(sandbox, "start")
-        self.manager.teardown(sandbox, confirm=True)
+        self.manager.teardown(sandbox)
 
         self._assert_live_lab_untouched()
         for _, args, _ in self.px.calls:
@@ -80,15 +80,14 @@ class TestCustomerIsolation(unittest.TestCase):
 
     def test_read_only_mode_stops_every_change(self):
         sandbox = self.manager.create_sandbox("customer-d", "single-switch", template_vmid=320)
-        self.manager.settings.allow_writes = False
         for action in (
             lambda: self.manager.create_sandbox("customer-e", "single-switch", template_vmid=320),
             lambda: self.manager.cable(sandbox, "sbx-acc-01", "ge-0/0/2", "sbx-acc-01", "ge-0/0/3"),
             lambda: self.manager.set_power(sandbox, "sbx-acc-01", "shutdown"),
             lambda: self.manager.snapshot(sandbox, "x"),
-            lambda: self.manager.teardown(sandbox, confirm=True),
+            lambda: self.manager.teardown(sandbox),
         ):
-            with self.assertRaises(GuardrailViolation) as caught:
+            with proxmox_may_only_look(self.manager), self.assertRaises(GuardrailViolation) as caught:
                 action()
             self.assertIn("read-only", str(caught.exception))
         self._assert_live_lab_untouched()

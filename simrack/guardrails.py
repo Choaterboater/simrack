@@ -8,7 +8,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from .config import IMAGE_PATTERNS, NO_PROFILE, Settings
+from .config import IMAGE_PATTERNS, Settings
 from .errors import GuardrailViolation
 from .models import Node, Sandbox
 
@@ -120,23 +120,7 @@ class Guardrails:
                 detail="Stop something, or use fewer switches. Do not balloon vJunos: it goes unstable.",
             )
 
-    # -- write switch -----------------------------------------------------------
-
-    def read_only_reason(self) -> tuple[str, str] | None:
-        """Why writes are off, as (message, detail), or None when they are on."""
-        if self.settings.allow_writes:
-            return None
-        if not self.settings.profile_path:
-            return (
-                "SimRack is read-only: no lab profile is loaded.",
-                f"{NO_PROFILE} lab-profile.example.toml shows every key.",
-            )
-        return ("SimRack is in read-only mode.", "Set SIMRACK_ALLOW_WRITES=1 in the service environment and restart to let it change the lab.")
-
-    def check_writes_enabled(self) -> None:
-        reason = self.read_only_reason()
-        if reason:
-            raise GuardrailViolation(reason[0], detail=reason[1])
+    # -- nodes ------------------------------------------------------------------
 
     def check_node_is_sandbox(self, sandbox: Sandbox, node_name: str) -> Node:
         try:

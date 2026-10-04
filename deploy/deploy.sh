@@ -1,7 +1,8 @@
 #!/bin/sh
 # Deploy SimRack to a Proxmox host and (re)start the service.
 # Run from the project root:  SIMRACK_HOST=<ssh host> ./deploy/deploy.sh
-# A lab-profile.toml in the project root is copied too; see README.md.
+# state/ (the lab profile, the tokens, the pause) and simrack.env stay on the
+# host and are never copied over; see README.md, Deploy.
 set -e
 HOST="${SIMRACK_HOST:?Set SIMRACK_HOST to the Proxmox host, as ssh knows it}"
 DEST="${SIMRACK_DEST:-/opt/simrack}"
@@ -34,5 +35,7 @@ echo "==> smoke test"
 ssh -o BatchMode=yes "$HOST" 'curl -s http://127.0.0.1:8787/ | grep -q "<title>SimRack</title>"' \
   || { echo "GET / did not return the SimRack page: is another service on port 8787?" >&2; exit 1; }
 echo "GET /            -> SimRack"
-ssh -o BatchMode=yes "$HOST" 'curl -s http://127.0.0.1:8787/api/state | python3 -c "import json,sys; d=json.load(sys.stdin); print(\"free RAM MB:\", d[\"host\"][\"free_ram_mb\"]); print(\"recipes:\", [r[\"name\"] for r in d[\"recipes\"]]); print(\"mist:\", d[\"mist\"]); print(\"profile:\", d[\"profile\"]); print(\"sandboxes:\", len(d[\"sandboxes\"]))"'
+# With SIMRACK_TOKEN in simrack.env, every API call needs it, even on loopback.
+# printf is a shell builtin, so the token never shows in the process list.
+ssh -o BatchMode=yes "$HOST" "set -a; [ ! -f $DEST/simrack.env ] || . $DEST/simrack.env; set +a; "'printf "Authorization: Bearer %s\n" "${SIMRACK_TOKEN:-}" | curl -s -H @- http://127.0.0.1:8787/api/state | python3 -c "import json,sys; d=json.load(sys.stdin); print(\"free RAM MB:\", d[\"host\"][\"free_ram_mb\"]); print(\"recipes:\", [r[\"name\"] for r in d[\"recipes\"]]); print(\"mist:\", d[\"mist\"]); print(\"profile:\", d[\"profile\"]); print(\"sandboxes:\", len(d[\"sandboxes\"]))"'
 echo "==> tunnel: ssh -N -L 8787:127.0.0.1:8787 $HOST"

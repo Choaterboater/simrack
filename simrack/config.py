@@ -6,9 +6,12 @@ lab profile, never from here: see profile.py and lab-profile.example.toml.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 from dataclasses import dataclass, field
+
+from .errors import LabError
 
 # --- Sandbox boundaries. -------------------------------------------------------
 
@@ -67,13 +70,17 @@ IMAGE_PATTERNS = {
 
 STATE_DIR = "/opt/simrack/state"
 
+#: What the setup page saves in the state folder.
+PROFILE_FILE = "lab-profile.toml"
+TOKENS_FILE = "tokens.json"
+
 #: Why SimRack changes nothing until a lab profile says what is live.
-NO_PROFILE = "Set SIMRACK_PROFILE to this lab's profile and restart. Without one SimRack cannot tell what is live, so it changes nothing."
+NO_PROFILE = "Fill in SimRack's setup page. Until it says what is live, SimRack cannot tell, so it changes nothing."
 
 
 @dataclass
 class Settings:
-    """Runtime settings: the lab profile says what is live, the environment holds secrets and switches."""
+    """Runtime settings: the lab profile says what is live; the tokens say what SimRack may change."""
 
     profile_path: str = ""
     pve_api_base: str = DEFAULT_PVE_API
@@ -88,9 +95,6 @@ class Settings:
     #: Size of one vJunos switch: Juniper's minimum. Free memory, read live, decides
     #: how many fit, so a RAM upgrade needs no change here.
     switch_mem_mb: int = SWITCH_MEM_MB
-    #: Set by the operator to allow writes; the app starts read-only without it.
-    allow_writes: bool = False
-    mist_writes_enabled: bool = False
     #: What is live, from the lab profile. Never touched.
     production_vmids: frozenset = frozenset()
     production_lxc: frozenset = frozenset()
@@ -112,26 +116,47 @@ class Settings:
     park_bridge: str = PARK_BRIDGE
     switch_ports: int = SWITCH_PORTS
     serial_dir: str = SERIAL_DIR
+    #: Whether assistants may also tear down, revert, delete switches and type at a console.
+    assistant_risky: bool = False
     extras: dict = field(default_factory=dict)
+    #: Saved files that could not be used, as LabError dicts, for the setup page to show.
+    problems: tuple = ()
 
     @classmethod
-    def from_env(cls, environ=None) -> "Settings":
-        """Load the lab profile named by SIMRACK_PROFILE; raise ProfileError if it is bad."""
-        environ = os.environ if environ is None else environ
-        lab: dict = {}
-        path = environ.get("SIMRACK_PROFILE", "")
-        if path:
-            from .profile import load_profile
+    def load(cls, environ=None) -> "Settings":
+        """Read the lab profile and tokens the setup page saved in the state folder.
+        Each token comes with the one address it may be sent to.
 
-            lab = load_profile(path)
-            lab["profile_path"] = path
-        # Without a profile nothing says what is live, so the write switches stay off.
+        The environment names only that folder and the token that guards the page.
+        A bad profile is left out, so SimRack changes nothing, and named in ``problems``.
+        """
+        environ = os.environ if environ is None else environ
+        state_dir = environ.get("SIMRACK_STATE_DIR", STATE_DIR)
+        lab: dict = {}
+        problems: list[dict] = []
+        path = os.path.join(state_dir, PROFILE_FILE)
+        if os.path.exists(path):
+            from .profile import ProfileError, load_profile
+
+            try:
+                lab = load_profile(path)
+                lab["profile_path"] = path
+            except ProfileError as error:
+                problems.append(error.as_dict())
+        tokens: dict = {}
+        if os.path.exists(os.path.join(state_dir, TOKENS_FILE)):
+            try:
+                with open(os.path.join(state_dir, TOKENS_FILE), encoding="utf-8") as handle:
+                    tokens = json.load(handle)
+            except (OSError, ValueError) as error:
+                problems.append(LabError(f"SimRack's saved tokens cannot be read: {error}.", detail="Save both tokens again on the setup page.").as_dict())
         return cls(
             **lab,
-            pve_token=environ.get("SIMRACK_PVE_TOKEN", ""),
-            mist_token=environ.get("MIST_TOKEN", ""),
-            mist_writes_enabled=bool(path) and environ.get("SIMRACK_MIST_WRITES", "0") == "1",
-            allow_writes=bool(path) and environ.get("SIMRACK_ALLOW_WRITES", "0") == "1",
-            state_dir=environ.get("SIMRACK_STATE_DIR", STATE_DIR),
+            pve_token=tokens.get("proxmox", ""),
+            pve_api_base=tokens.get("proxmox_api") or DEFAULT_PVE_API,
+            mist_token=tokens.get("mist", ""),
+            mist_api_base=tokens.get("mist_api") or DEFAULT_MIST_API,
+            state_dir=state_dir,
             extras={"token": environ.get("SIMRACK_TOKEN", "")},
+            problems=tuple(problems),
         )

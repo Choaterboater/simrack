@@ -2,27 +2,59 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
 import re
+import shutil
 import tempfile
 
-from simrack.config import Settings
+from simrack.config import PROFILE_FILE, Settings
 from simrack.service import SandboxManager
 
 
+#: Proxmox's built-in roles (pveum role list): what a token holds on every path.
+PVE_ADMINISTRATOR = frozenset(
+    {
+        "Datastore.Allocate", "Datastore.AllocateSpace", "Datastore.AllocateTemplate", "Datastore.Audit",
+        "Group.Allocate", "Mapping.Audit", "Mapping.Modify", "Mapping.Use", "Permissions.Modify",
+        "Pool.Allocate", "Pool.Audit", "Realm.Allocate", "Realm.AllocateUser",
+        "SDN.Allocate", "SDN.Audit", "SDN.Use",
+        "Sys.Audit", "Sys.Console", "Sys.Incoming", "Sys.Modify", "Sys.PowerMgmt", "Sys.Syslog", "User.Modify",
+        "VM.Allocate", "VM.Audit", "VM.Backup", "VM.Clone", "VM.Config.CDROM", "VM.Config.CPU",
+        "VM.Config.Cloudinit", "VM.Config.Disk", "VM.Config.HWType", "VM.Config.Memory", "VM.Config.Network",
+        "VM.Config.Options", "VM.Console", "VM.Migrate", "VM.Monitor", "VM.PowerMgmt", "VM.Snapshot",
+        "VM.Snapshot.Rollback",
+    }
+)
+PVE_AUDITOR = frozenset({"Datastore.Audit", "Mapping.Audit", "Pool.Audit", "SDN.Audit", "Sys.Audit", "VM.Audit"})
+
+
 class FakeProxmox:
-    """Records every call. Free and total memory are set by the test."""
+    """Records every write. Free and total memory are set by the test."""
 
     #: Only root@pam may set or clear these, and an API token is never root@pam
     #: (qemu-server check_vm_modify_config_perm: "only root can set 'args' config").
     ROOT_ONLY = ("args", "hookscript")
 
-    def __init__(self, free_mb: int = 40000, templates: list[int] | None = None, total_mb: int = 65536) -> None:
+    def __init__(
+        self,
+        free_mb: int = 40000,
+        templates: list[int] | None = None,
+        total_mb: int = 65536,
+        privileges: frozenset = PVE_ADMINISTRATOR,
+        token: str = "fake",
+    ) -> None:
+        self.token = token
+        #: What the token holds, on every path (GET /access/permissions).
+        self.privileges = privileges
+        self.permission_reads = 0
         self.free_mb = free_mb
         self.total_mb = total_mb
         self.vms: dict[int, dict] = {}
+        self.containers: dict[int, dict] = {}
+        #: Host bridges: the ones in /etc/network/interfaces carry "cidr" and "gateway".
         self.networks: dict[str, dict] = {}
         self.snapshots: dict[int, dict[str, dict]] = {}
         self.calls: list[tuple] = []
@@ -36,6 +68,10 @@ class FakeProxmox:
 
     def _log(self, _method, *args, **kwargs):
         self.calls.append((_method, args, kwargs))
+
+    def use(self, settings):
+        """The token the setup page saved; the fake answers whatever it is."""
+        self.token = settings.pve_token
 
     @staticmethod
     def mac(vmid, index):
@@ -57,6 +93,10 @@ class FakeProxmox:
         return {k: v for k, v in vm.items() if re.fullmatch(r"net\d+", k)}
 
     # -- reads ------------------------------------------------------------------
+    def permissions(self, path):
+        self.permission_reads += 1
+        return {privilege: 1 for privilege in self.privileges}
+
     def node_status(self):
         mib = 1024 * 1024
         return {"memory": {"free": self.free_mb * mib, "available": self.free_mb * mib, "total": self.total_mb * mib}}
@@ -67,7 +107,14 @@ class FakeProxmox:
     def free_memory_mb(self):
         return self.free_mb
 
+    def _need_token(self):
+        if not self.token:
+            from simrack.errors import NotConfigured
+
+            raise NotConfigured("Proxmox API token is not set.", detail="Add one on SimRack's setup page.")
+
     def list_vms(self):
+        self._need_token()
         return list(self.vms.values())
 
     def get_vm(self, vmid):
@@ -75,6 +122,14 @@ class FakeProxmox:
 
     def get_network(self):
         return list(self.networks.values())
+
+    def list_lxc(self):
+        self._need_token()
+        return list(self.containers.values())
+
+    def bridges(self):
+        self._need_token()
+        return [dict(bridge) for bridge in self.networks.values() if bridge.get("type") == "bridge"]
 
     def list_images(self, storage="local"):
         return [
@@ -217,10 +272,16 @@ class FakeProxmox:
 
 
 class FakeMist:
-    def __init__(self, *, token="fake-token", writes=True) -> None:
+    #: Roles Mist lets change an org: Super User (admin) and Network Admin (write).
+    WRITE_ROLES = ("admin", "write")
+
+    def __init__(self, *, token="fake-token", role="write", org_id="org-example") -> None:
         self.token = token
-        self.settings = Settings(mist_token=token, mist_writes_enabled=writes)
-        self.sites: dict[str, dict] = {}
+        #: The token's role on ``org_id``, as GET /self reports it; None lists no privileges at all.
+        self.role = role
+        self.org_id = org_id
+        self.self_reads = 0
+        self.site_records: dict[str, dict] = {}
         self.settings_by_site: dict[str, dict] = {}
         self.topologies: dict[str, list[dict]] = {}
         self.devices_by_site: dict[str, list[dict]] = {}
@@ -250,30 +311,55 @@ class FakeMist:
     def configured(self):
         return bool(self.token)
 
-    def writes_enabled(self):
-        return bool(self.token) and self.settings.mist_writes_enabled
+    def use(self, settings):
+        """The token the setup page saved. ``org_id`` stays the org the token has a role on."""
+        self.token = settings.mist_token
+
+    def whoami(self):
+        self._read()
+        self.self_reads += 1
+        if self.role is None:
+            return {"email": "lab@example.com", "privileges": []}
+        return {
+            "email": "lab@example.com",
+            "privileges": [{"scope": "org", "org_id": self.org_id, "name": "Example Org", "role": self.role}],
+        }
+
+    def sites(self, org_id=None):
+        """Only the org the token has a role on answers."""
+        self._read()
+        if org_id != self.org_id:
+            from simrack.errors import BackendError
+
+            raise BackendError(f"Mist API GET /orgs/{org_id}/sites failed (403).", status=403)
+        return list(self.site_records.values())
 
     def _guard(self, what):
-        if not self.writes_enabled():
-            from simrack.errors import GuardrailViolation
+        """Mist refuses a write from a token whose role may only look."""
+        if self.role not in self.WRITE_ROLES:
+            from simrack.errors import BackendError
 
-            raise GuardrailViolation("Mist writes are disabled.", detail=f"refused {what}")
+            raise BackendError(
+                f"Mist API {what} failed (403).",
+                detail='{"detail": "You do not have permission to perform this action."}',
+                status=403,
+            )
 
     def create_site(self, name, org_id=None):
         self._guard("create_site")
         self._log("create_site", name)
         self._n += 1
         site_id = f"site-{self._n}"
-        self.sites[site_id] = {"id": site_id, "name": name}
+        self.site_records[site_id] = {"id": site_id, "name": name}
         self.settings_by_site[site_id] = {}
         self.topologies[site_id] = []
         self.devices_by_site[site_id] = []
-        return self.sites[site_id]
+        return self.site_records[site_id]
 
     def delete_site(self, site_id):
         self._guard("delete_site")
         self._log("delete_site", site_id)
-        self.sites.pop(site_id, None)
+        self.site_records.pop(site_id, None)
 
     def site_setting(self, site_id):
         self._read()
@@ -571,24 +657,42 @@ LAB_PROFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures
 
 def lab_settings(tmpdir: str, *, profile: str = LAB_PROFILE, **overrides) -> Settings:
     """Settings loaded the way the service loads them, from a lab profile, then overridden."""
-    settings = Settings.from_env({"SIMRACK_PROFILE": profile, "SIMRACK_STATE_DIR": tmpdir})
+    shutil.copyfile(profile, os.path.join(tmpdir, PROFILE_FILE))
+    settings = Settings.load({"SIMRACK_STATE_DIR": tmpdir})
     return dataclasses.replace(settings, **overrides)
 
 
 def make_manager(tmpdir: str, *, proxmox=None, mist=None, **settings_kwargs) -> SandboxManager:
-    settings = lab_settings(
-        tmpdir,
-        pve_token="fake",
-        mist_token="fake-token",
-        mist_writes_enabled=True,
-        allow_writes=settings_kwargs.pop("allow_writes", True),
-        **settings_kwargs,
-    )
+    settings = lab_settings(tmpdir, pve_token="fake", mist_token="fake-token", **settings_kwargs)
     return SandboxManager(
         settings,
         proxmox=proxmox or FakeProxmox(),
         mist=mist or FakeMist(),
     )
+
+
+@contextlib.contextmanager
+def proxmox_may_only_look(manager: SandboxManager):
+    """As if someone cut the Proxmox token down to look-only, then put it back."""
+    manager.proxmox.privileges = PVE_AUDITOR
+    manager.access.forget()
+    try:
+        yield
+    finally:
+        manager.proxmox.privileges = PVE_ADMINISTRATOR
+        manager.access.forget()
+
+
+@contextlib.contextmanager
+def mist_may_only_read(manager: SandboxManager):
+    """As if someone cut the Mist token's role on the org down to read, then put it back."""
+    role, manager.mist.role = manager.mist.role, "read"
+    manager.access.forget()
+    try:
+        yield
+    finally:
+        manager.mist.role = role
+        manager.access.forget()
 
 
 class TempDir:

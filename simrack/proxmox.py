@@ -37,10 +37,13 @@ def _tls_for(base: str) -> ssl.SSLContext:
 
 class ProxmoxClient:
     def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or Settings()
-        self.base = self.settings.pve_api_base.rstrip("/")
-        self.node = self.settings.pve_node
-        self.token = self.settings.pve_token
+        self.use(settings or Settings())
+
+    def use(self, settings: Settings) -> None:
+        self.settings = settings
+        self.base = settings.pve_api_base.rstrip("/")
+        self.node = settings.pve_node
+        self.token = settings.pve_token
         self._ssl = _tls_for(self.base)
 
     # -- transport --------------------------------------------------------------
@@ -49,7 +52,7 @@ class ProxmoxClient:
         if not self.token:
             raise NotConfigured(
                 "Proxmox API token is not set.",
-                detail="Set SIMRACK_PVE_TOKEN (root@pam!simrack=...) in the service environment.",
+                detail="Add one on SimRack's setup page.",
             )
         url = f"{self.base}{path}"
         data = None
@@ -96,6 +99,11 @@ class ProxmoxClient:
 
     # -- read -------------------------------------------------------------------
 
+    def permissions(self, path: str) -> dict:
+        """What this token may do on ``path``: privilege -> propagate. Any token may ask about itself."""
+        reply = self._request("GET", "/access/permissions", {"path": path}) or {}
+        return reply.get(path, {}) if isinstance(reply, dict) else {}
+
     def node_status(self) -> dict:
         return self._request("GET", f"/nodes/{self.node}/status") or {}
 
@@ -115,6 +123,9 @@ class ProxmoxClient:
 
     def list_vms(self) -> list[dict]:
         return self._request("GET", f"/nodes/{self.node}/qemu") or []
+
+    def list_lxc(self) -> list[dict]:
+        return self._request("GET", f"/nodes/{self.node}/lxc") or []
 
     def get_vm(self, vmid: int) -> dict:
         return self._request("GET", f"/nodes/{self.node}/qemu/{int(vmid)}/config") or {}
@@ -241,11 +252,16 @@ class ProxmoxClient:
         return self._request("GET", f"/nodes/{self.node}/qemu/{int(vmid)}/status/current") or {}
 
     # -- bridges ----------------------------------------------------------------
-    # Sandbox bridges are runtime-only Linux bridges (see hostnet). The PVE
-    # network API is never used: applying it rewrites /etc/network/interfaces.
+    # Sandbox bridges are runtime-only Linux bridges (see hostnet). SimRack only
+    # reads the PVE network API: applying a change there rewrites
+    # /etc/network/interfaces.
 
     def get_network(self) -> list[dict]:
         return hostnet.list_bridges()
+
+    def bridges(self) -> list[dict]:
+        """The bridges set up in /etc/network/interfaces, with their "cidr" and "gateway"."""
+        return self._request("GET", f"/nodes/{self.node}/network", {"type": "any_bridge"}) or []
 
     def create_bridge(self, name: str, *, mtu: int = 9216) -> None:
         hostnet.create(name, mtu)

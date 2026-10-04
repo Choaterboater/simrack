@@ -13,35 +13,41 @@ Everything in this document follows from that.
 
 | Step | Why | Effort |
 |---|---|---|
-| 1. Write the lab profile | SimRack refuses anything it lists, and changes nothing without it. | 30 min |
+| 1. Set SimRack up on its setup page: its Proxmox token, then what is live | SimRack refuses anything ticked as live, and changes nothing until the page is saved. | 30 min |
 | 2. Make a clean vJunos **template** in the sandbox range (320 by default) | Every sandbox clones from it. Never clone a booted vJunos. | 1 session |
 | 3. Prove two clones get **different serials** | Mist keys on serial. If they collide, the whole plan stops here. | 30 min, do it before anything else |
-| 4. Create the Proxmox API token for SimRack | Without it SimRack cannot create guests. | 10 min |
-| 5. Run SimRack read-only first | Confirm the page lists your live lab as protected. | 10 min |
-| 6. One sandbox, `single-switch` recipe | Cheapest proof (~5 GB). | 30 min |
-| 7. `collapsed-core`, then `ip-clos` | The real thing. | 1 hour |
-| 8. Mist site per sandbox + revert button | The part people actually break. | 1 hour |
+| 4. Look before you change | Confirm the page lists your live lab as protected. Every change asks first, and **Pause** stops them all. | 10 min |
+| 5. One sandbox, `single-switch` recipe | Cheapest proof (~5 GB). | 30 min |
+| 6. `collapsed-core`, then `ip-clos` | The real thing. | 1 hour |
+| 7. Mist site per sandbox + revert button | The part people actually break. | 1 hour |
 
 **Do step 3 before step 2's result is trusted.** Everything else is reversible; a
 lab full of switches that all report the same serial is not.
 
-Every write path is tested against fakes, not yet on real gear, so expect step 6
+Every change is tested against fakes, not yet on real gear, so expect step 5
 onward to find something. Watch each first run.
 
-### Step 1 in detail: the lab profile
+### Step 1 in detail: the setup page
 
-Copy `lab-profile.example.toml` and list everything live:
+Deploy and open the page (README, Deploy); the setup page opens by itself. In
+**Connect**, run the token commands it shows as root on the host, and paste the
+token the last one prints. A Mist token is optional: Observer only looks, Super
+User or Network Admin lets SimRack build Mist sites. Then, in **The lab**, check
+that everything live is ticked:
 
-- every live guest under `vmids` and every live container under `lxc`
-- every bridge the live lab uses, including ones defined in
-  `/etc/network/interfaces.d/` (the Proxmox network API cannot see those; see
-  section 7)
-- every Mist site that is not a sandbox, by site ID
-- every subnet the live fabric routes
+- every live guest and container. Templates are left out: SimRack only clones
+  them
+- every bridge the live lab uses. Bridges defined in
+  `/etc/network/interfaces.d/` are invisible to the Proxmox network API (see
+  section 7), so type them into **Also protect**
+- every Mist site that is not a sandbox, by site ID (listed with a Mist token)
+- every subnet the live fabric routes. The page finds the subnets on the host's
+  bridges; type in the ones only the fabric routes
 
-Check the node name with `pvesh get /nodes`: case matters. Leave `vlan` out of
-`[management]` if the management network is untagged. The pool is where sandbox
-switches are planned; adoption records the address DHCP actually gives fxp0.
+Check the node name with `pvesh get /nodes`: case matters. Leave the VLAN blank
+if the management network is untagged. The pool is where sandbox switches are
+planned; adoption records the address DHCP actually gives fxp0. Save, and
+**Export** a copy to keep.
 
 ### Step 2 in detail: build the template
 
@@ -67,6 +73,10 @@ Do this as root on the host. Proxmox lets only `root@pam` set `args` and
 `hookscript`, so SimRack's API token never sets them; every clone copies them
 from the template, and gets a fresh `smbios1` uuid.
 
+If 320 was still a plain VM when the setup page was first saved, the page
+ticked it as live and moved the sandbox ranges past it, so every build refuses
+it as a clone source. Untick it, set the ranges back if you like, and save.
+
 ### Step 3 in detail: the serial question
 
 Each vJunos switch reports a serial, and Mist keys on it. Every clone gets a
@@ -86,9 +96,9 @@ building more switches from that image.
 
 ## 2. Tearing the lab down
 
-**Tear down a sandbox, not the lab.** The live lab (everything in the profile's
-`[protected]` table) has no supported teardown. It is your reference build and
-the thing people are shown.
+**Tear down a sandbox, not the lab.** The live lab (everything ticked as live on
+the setup page) has no supported teardown. It is your reference build and the
+thing people are shown.
 
 In the front end: open the sandbox, **Tear down**. That deletes the sandbox
 guests, its bridges and its Mist site, and leaves the template and the live lab
@@ -153,16 +163,17 @@ Order matters: roll back the guests first, then push the Mist config, then verif
 | Mist pushed WAN Edge config and broke OSPF | Config management was enabled on a device with an empty template | Keep config management **off** for a vSRX run from the CLI. Mist WAN Edge does not fit a CLI OSPF/BGP design. |
 | GBP tags render, counters stay 0 | vJunos does not enforce VXLAN GBP (the feature is unlicensed on vJunos) | Not a bug. Use a physical EX for a real GBP demo. |
 | A sandbox switch will not join the site | Serial collision, or it was never adopted | Compare serials on every clone (step 3 above), then click **Adopt again** in the sandbox's Join Mist checklist. |
-| Page says "no lab profile is loaded" | `SIMRACK_PROFILE` is unset | Set it in `simrack.env` and restart. |
-| Start-up fails naming a profile key | A mistake in the profile | Fix that key. SimRack will not start on a profile it cannot trust. |
+| "SimRack is read-only: no lab profile is loaded" | The setup page has not been saved, or the saved profile has a mistake (a key an older version used counts) | Open **Setup**. It names any mistake; fix it and save. |
+| "SimRack is read-only: the Proxmox token may not change the lab" | The token lacks a privilege; the detail names each one and where | Run the setup page's token commands again, or grant what is named. SimRack asks Proxmox again within 30 s. |
+| "Changes are paused" | Someone pressed **Pause**; it lasts across restarts | **Resume** in the top bar. |
 | Every Proxmox call fails with HTTP 596 "certificate verify failed" | The profile's node name has the wrong case | Copy the name from `pvesh get /nodes`. See section 7. |
-| Proxmox calls fail with "certificate verify failed", and the node name is right | `[proxmox] api` names an address other than the host itself, and its certificate is self-signed | Leave `api` at its default, `https://127.0.0.1:8006/api2/json`. |
+| Proxmox calls fail with "certificate verify failed", and the node name is right | The Proxmox address beside the token is not the host itself, and its certificate is self-signed | When SimRack runs on the host, set the address back to `https://127.0.0.1:8006/api2/json` and paste the token again. |
 | Mist calls fail with "certificate verify failed" | The network inspects TLS | Add the inspecting CA to the host's trust store (`/usr/local/share/ca-certificates/`, then `update-ca-certificates`). Test with `curl -sS https://api.mist.com/api/v1/`, without `-k`. |
 | Build refused: "vmid … is not a template" | The clone source is a plain VM | Make a clean template (step 2). Never template a booted vJunos. |
 | LACP down on a switch started from the Proxmox GUI | A start gives the guest new taps, and the template has no hookscript | Start it from SimRack, or add the hookscript to the template (step 2). |
 | Build fabric refused: "overlaps the protected subnet" | A sandbox range overlaps a subnet the profile protects | The sandbox ranges are fixed (see README.md); free them in the live lab, or build the fabric elsewhere. |
-| "The management pool … is full" | Every pool address is planned for a switch | Tear down a sandbox, or widen `[management] pool`. |
-| Front end says "Mist writes are disabled" | `SIMRACK_MIST_WRITES` is not 1, or no profile is loaded | Expected. Take a snapshot, then set it. |
+| "The management pool … is full" | Every pool address is planned for a switch | Tear down a sandbox, or widen the management pool on the setup page. |
+| "Mist changes are off: its role on this org is read" (or "it has no role on this org") | The Mist token is an Observer's, or belongs to another org | Expected for an Observer. To build Mist sites, paste a Super User or Network Admin token for the profile's org on the setup page. |
 | Front end says "Not enough free memory" | Under the 6 GB reserve after the build | Stop a sandbox switch, or build the `single-switch` recipe. Do not balloon vJunos. |
 
 ### The health check after any change
@@ -188,18 +199,20 @@ border router means the border path is broken, not Mist.
    other; that is not a bug you can config away.
 7. **Snapshot before you experiment**, in both places. The revert button is only
    as good as the last snapshot.
-8. **When the live lab changes, change the profile.** A new guest, bridge, site
-   or subnet is unprotected until the profile lists it.
+8. **When the live lab changes, open Setup.** It marks guests found since as
+   **new**; a new guest, bridge, site or subnet is unprotected until it is
+   ticked and saved.
 
 ## 6. Honest gaps in this build
 
-- Nothing has been built on a real host with writes on. Every write path,
-  from Build sandbox to Tear down, is tested against fakes only.
-- The profile-driven version has not run on a real host yet. Check that the
-  page lists your live lab as protected before turning writes on.
+- Nothing has been built on a real host. Every change, from Build sandbox to
+  Tear down, is tested against fakes only.
+- The setup page, the token checks and the MCP server have not run on a real
+  host yet. Check that the page lists your live lab as protected, and that its
+  token commands work on your Proxmox version, before the first build.
 - Sandbox bridges are runtime-only. The service re-creates missing ones at
-  start-up (writes on), so start the service before starting sandbox guests
-  after a host reboot.
+  start-up (while SimRack may change the lab), so start the service before
+  starting sandbox guests after a host reboot.
 - vmids for sandbox LXC clients (350-399 by default) share the switch range.
 - Adoption is driven from the page (Join Mist → Adopt) over the serial console.
   The console script is tested against scripted Junos replies only, so watch
@@ -221,26 +234,28 @@ border router means the border path is broken, not Mist.
   Proxmox has right, it says so; that mapping is the first thing to check.
 - The front end has no authentication of its own beyond a bearer token. It binds
   127.0.0.1 by default; use an SSH tunnel, not a public bind.
-- The Proxmox API token is a **root** token with `privsep=0`, so it carries full
-  root privileges. That matches the fact that the service runs as root (it needs
-  the serial console), but a dedicated `simrack@pve` user with a custom role
-  limited to the sandbox range plus network modify is the correct hardening. Not
-  done yet.
+- The setup page's Proxmox token is a `simrack@pve` token with one role, but
+  the role is granted on all of `/vms`, so Proxmox would let it change live
+  guests too: SimRack's guardrails, not Proxmox, keep it off them. A resource
+  pool for the sandbox range would let Proxmox enforce that. The one role also
+  grants `Datastore.AllocateSpace` on `local`, where `Datastore.Audit` is all
+  SimRack needs. The service itself runs as root: it makes bridges with
+  `ip link` and opens the serial console.
 
 ## 7. Host gotchas
 
 **1. The node name is case sensitive.** If the node is `PVE-01`, asking for
 `pve-01` returns HTTP 596 with `certificate verify failed` on every
 `/nodes/pve-01/...` call, while `/nodes` itself works. The error sends you
-looking at certificates when the real problem is the name. Copy `[proxmox] node`
-from `pvesh get /nodes`.
+looking at certificates when the real problem is the name. Copy the setup
+page's Proxmox node from `pvesh get /nodes`.
 
 **2. Bridges in sourced files are invisible to the PVE network API.** Bridges
 defined in a file under `/etc/network/interfaces.d/` are not read by PVE, so
-`GET /nodes/<node>/network` never lists them, and the only thing stopping
-SimRack from creating a bridge with the same name is the profile's
-`[protected] bridges`. List every live bridge there, and add new ones as the
-lab grows.
+`GET /nodes/<node>/network` never lists them, and the setup page cannot find
+them. The only thing stopping SimRack from creating a bridge with the same name
+is a protected bridge: type every live one into the setup page's **Also
+protect**, and add new ones as the lab grows.
 
 SimRack therefore never uses the PVE network API for bridges: applying it ends
 in an `ifreload` that rewrites `/etc/network/interfaces`. Sandbox bridges are made

@@ -11,7 +11,8 @@ import ipaddress
 import unittest
 
 from simrack.api import build_router
-from tests.fakes import FakeProxmox, TempDir, make_manager
+from simrack.errors import GuardrailViolation
+from tests.fakes import FakeProxmox, TempDir, make_manager, mist_may_only_read
 
 
 class TestMistSetupMimic(unittest.TestCase):
@@ -74,13 +75,12 @@ class TestMistSetupMimic(unittest.TestCase):
         self.assertIn(200, state["production"]["vmids"], "the live switches stay listed as protected")
         self.assertEqual(state["host"]["free_ram_mb"], 40000)
 
-    def test_mist_writes_are_refused_when_disabled(self):
+    def test_mist_writes_are_refused_when_the_token_may_only_read(self):
         sandbox = self.manager.create_sandbox("demo2", "single-switch", template_vmid=320)
         self.manager.mist_create_site(sandbox)
-        self.manager.mist.settings.mist_writes_enabled = False
-        with self.assertRaises(Exception) as caught:
+        with mist_may_only_read(self.manager), self.assertRaises(GuardrailViolation) as caught:
             self.manager.mist_build_fabric(sandbox)
-        self.assertIn("disabled", str(caught.exception))
+        self.assertIn("role on this org is read", str(caught.exception))
 
 
 if __name__ == "__main__":

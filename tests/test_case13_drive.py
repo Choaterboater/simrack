@@ -30,7 +30,7 @@ from simrack.models import Link, Node, Sandbox
 from simrack.profile import load_profile
 from simrack.recipes import ip_clos_sandbox
 from simrack.service import _bridge_name
-from tests.fakes import LAB_PROFILE, read_state
+from tests.fakes import LAB_PROFILE, mist_may_only_read, proxmox_may_only_look, read_state
 from tests.test_case12_build_from_shape import Base
 from tests.test_case9_shapes import bundle
 
@@ -491,18 +491,14 @@ class TestBuildFabric(Built):
         self.assertEqual(len(result["switches"]), 6)
         self.assertIn(self.macs["sbx-acc-01"], self.topology()["switch_configs"])
 
-    def test_writes_off_mist_off_or_no_site_are_refused_before_any_write(self):
-        self.manager.settings.allow_writes = False
-        with self.assertRaises(GuardrailViolation) as caught:
+    def test_read_only_tokens_or_no_site_are_refused_before_any_write(self):
+        with proxmox_may_only_look(self.manager), self.assertRaises(GuardrailViolation) as caught:
             self.manager.mist_build_fabric(self.sandbox)
         self.assertIn("read-only", str(caught.exception))
-        self.manager.settings.allow_writes = True
 
-        self.mist.settings.mist_writes_enabled = False
-        with self.assertRaises(GuardrailViolation) as caught:
+        with mist_may_only_read(self.manager), self.assertRaises(GuardrailViolation) as caught:
             self.manager.mist_build_fabric(self.sandbox)
-        self.assertIn("disabled", str(caught.exception))
-        self.mist.settings.mist_writes_enabled = True
+        self.assertIn("role on this org is read", str(caught.exception))
 
         token, self.mist.token = self.mist.token, ""
         with self.assertRaises(NotConfigured):
@@ -632,11 +628,11 @@ class TestFabricCheck(Built):
         self.assertTrue(any("1 cable" in n for n in self.sandbox.notes[-1:]), self.sandbox.notes[-1:])
 
     def test_read_only_reports_without_fixing(self):
-        self.manager.settings.allow_writes = False
         del self.px.networks["sbx323_325_20"]
         acc = self.vmid("sbx-acc-02")
         self.px.vms[acc]["net1"] = f"virtio={self.px.mac(acc, 1)},bridge=sbx323_326_30,firewall=0,link_down=1"
-        result = self.manager.fabric_check(self.sandbox)
+        with proxmox_may_only_look(self.manager):
+            result = self.manager.fabric_check(self.sandbox)
         self.assertIs(result["repair"], False)
         self.assertEqual(self.cable(result, "sbx323_325_20")["proxmox"], "broken")
         self.assertIn("missing", self.cable(result, "sbx323_325_20")["proxmox_detail"])
@@ -778,7 +774,7 @@ class TestDriveMistClient(unittest.TestCase):
         )
 
     def test_a_mist_error_keeps_its_status(self):
-        client = MistClient(Settings(mist_token="t", org_id="org-1", mist_writes_enabled=True))
+        client = MistClient(Settings(mist_token="t", org_id="org-1"), write_gate=lambda: None)
         refused = urllib.error.HTTPError("https://api.mist.com/x", 400, "Bad Request", {}, io.BytesIO(b'{"detail": "invalid switch_configs"}'))
         with mock.patch("urllib.request.urlopen", side_effect=refused):
             with self.assertRaises(BackendError) as caught:
@@ -823,11 +819,11 @@ class TestDriveApi(Built):
         self.assertEqual(body["summary"]["cables"], 8)
 
     def test_the_check_works_read_only_and_the_build_does_not(self):
-        self.manager.settings.allow_writes = False
-        status, body = self._post("/api/sandboxes/park-a/fabric/check")
-        self.assertEqual(status, 200, body)
-        self.assertIs(body["repair"], False)
-        status, body = self._post("/api/sandboxes/park-a/mist/fabric")
+        with proxmox_may_only_look(self.manager):
+            status, body = self._post("/api/sandboxes/park-a/fabric/check")
+            self.assertEqual(status, 200, body)
+            self.assertIs(body["repair"], False)
+            status, body = self._post("/api/sandboxes/park-a/mist/fabric")
         self.assertEqual(status, 409, body)
 
 

@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .errors import LabError, NotFound
 from .service import SandboxManager
+from .setup_page import SetupPage
 from .ui import ASSETS, PAGE
 
 #: Large enough for a Mist topology, its switches and their port stats.
@@ -51,7 +52,15 @@ def build_router(manager: SandboxManager) -> Router:
     router = Router()
 
     router.add("GET", "/api/state", lambda **_: manager.state())
+    # Not queued behind a running change: a pause stops that change at its next step.
+    router.add("POST", "/api/pause", lambda body, **_: manager.set_paused(body.get("paused") is True), locked=False)
     router.add("GET", "/api/recipes", lambda **_: {"recipes": manager.state()["recipes"]})
+
+    setup = SetupPage(manager)
+    router.add("GET", "/api/setup", lambda **_: setup.page())
+    router.add("POST", "/api/setup", lambda body, **_: setup.save(body))
+    router.add("GET", "/api/setup/export", lambda **_: setup.export())
+    router.add("POST", "/api/setup/tokens", lambda body, **_: setup.save_tokens(body))
 
     def create_sandbox(body, query):
         return manager.create_sandbox(
@@ -134,7 +143,7 @@ def build_router(manager: SandboxManager) -> Router:
     router.add("POST", "/api/sandboxes/{name}/mist/revert", lambda name, body, **_: manager.mist_revert(manager.get(name), body.get("label", "")))
     router.add("GET", "/api/sandboxes/{name}/mist/health", lambda name, **_: manager.mist_health(manager.get(name)))
     router.add("GET", "/api/sandboxes/{name}/mist/adopt", lambda name, **_: manager.adopt_config(manager.get(name)))
-    router.add("POST", "/api/sandboxes/{name}/teardown", lambda name, body, **_: manager.teardown(manager.get(name), keep_mist=body.get("keep_mist", False), confirm=body.get("confirm", False)))
+    router.add("POST", "/api/sandboxes/{name}/teardown", lambda name, body, **_: manager.teardown(manager.get(name), keep_mist=body.get("keep_mist", False)))
 
     return router
 

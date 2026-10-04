@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 import unittest
 import urllib.error
@@ -15,11 +16,12 @@ import urllib.request
 from unittest import mock
 
 from simrack.api import serve
-from simrack.config import Settings
+from simrack.config import PROFILE_FILE, Settings
 from simrack.errors import BackendError, GuardrailViolation
 from simrack.mist import MistClient
 from simrack.proxmox import ProxmoxClient
-from tests.fakes import FakeProxmox, TempDir, make_manager
+from simrack.service import SandboxManager
+from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager, proxmox_may_only_look
 
 
 class RecordingProxmox(ProxmoxClient):
@@ -115,15 +117,16 @@ class TestMistAndSettings(unittest.TestCase):
         self.assertEqual(args[:2], ("GET", "/sites/site-1/devices?type=switch"))
         self.assertEqual(len(args), 2, "GET must not carry a JSON body")
 
-    def test_the_app_starts_read_only(self):
-        self.assertFalse(Settings().allow_writes)
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(Settings.from_env().allow_writes)
+    def test_the_app_starts_read_only_until_it_has_a_proxmox_token(self):
         example = os.path.join(os.path.dirname(__file__), os.pardir, "lab-profile.example.toml")
-        with mock.patch.dict(os.environ, {"SIMRACK_PROFILE": example, "SIMRACK_ALLOW_WRITES": "1", "SIMRACK_TOKEN": "abc"}, clear=True):
-            settings = Settings.from_env()
-            self.assertTrue(settings.allow_writes)
+        with TempDir() as tmp:
+            shutil.copyfile(example, os.path.join(tmp, PROFILE_FILE))
+            with mock.patch.dict(os.environ, {"SIMRACK_TOKEN": "abc", "SIMRACK_STATE_DIR": tmp}, clear=True):
+                settings = Settings.load()
             self.assertEqual(settings.extras["token"], "abc")
+            state = SandboxManager(settings, proxmox=FakeProxmox(), mist=FakeMist()).state()
+        self.assertFalse(state["writes_enabled"])
+        self.assertIn("Proxmox API token is not set", state["read_only_reason"])
 
 
 class TestCablingAndTeardown(unittest.TestCase):
@@ -147,7 +150,7 @@ class TestCablingAndTeardown(unittest.TestCase):
         sandbox = self.manager.create_sandbox("run", "single-switch", template_vmid=320)
         vmid = sandbox.nodes[0].vmid
         self.assertEqual(self.px.vms[vmid]["status"], "running")
-        result = self.manager.teardown(sandbox, confirm=True)
+        result = self.manager.teardown(sandbox)
         self.assertTrue(result["complete"])
         names = [c[0] for c in self.px.calls if c[0] in ("set_power", "delete_vm")]
         self.assertEqual(names[-2:], ["set_power", "delete_vm"])
@@ -164,15 +167,15 @@ class TestCablingAndTeardown(unittest.TestCase):
             return real_delete(vmid, **kw)
 
         self.px.delete_vm = delete
-        result = self.manager.teardown(sandbox, confirm=True)
+        result = self.manager.teardown(sandbox)
         self.assertFalse(result["complete"])
         self.assertIn("stuck", self.manager.sandboxes, "the record must stay so the teardown can be retried")
         self.assertEqual([n.name for n in sandbox.nodes], [stuck.name])
-        self.assertIn(sandbox.mist_site_id, self.manager.mist.sites)
+        self.assertIn(sandbox.mist_site_id, self.manager.mist.site_records)
         self.assertEqual(len(sandbox.links), 1, "a cable whose switch still exists is kept")
 
         self.px.delete_vm = real_delete
-        self.assertTrue(self.manager.teardown(sandbox, confirm=True)["complete"])
+        self.assertTrue(self.manager.teardown(sandbox)["complete"])
         self.assertNotIn("stuck", self.manager.sandboxes)
 
     def test_bridges_lost_in_a_reboot_are_recreated(self):
@@ -182,8 +185,7 @@ class TestCablingAndTeardown(unittest.TestCase):
 
     def test_console_is_a_write(self):
         sandbox = self.manager.create_sandbox("con", "single-switch", template_vmid=320)
-        self.manager.settings.allow_writes = False
-        with self.assertRaises(GuardrailViolation):
+        with proxmox_may_only_look(self.manager), self.assertRaises(GuardrailViolation):
             self.manager.console_command(sandbox, "sbx-acc-01", "show version")
 
 

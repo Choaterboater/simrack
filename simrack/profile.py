@@ -1,20 +1,20 @@
 """The lab profile: one TOML file that says what is live on this host.
 
 SimRack never touches what the profile protects, and with no profile it stays
-read-only, because then it cannot tell what is live. A mistake in the file stops
-start-up and names the key: a typo in a protected list must never quietly leave
-something live unprotected. ``lab-profile.example.toml`` shows every key.
+read-only, because then it cannot tell what is live. A mistake in the file leaves
+the whole file out, so SimRack changes nothing, and names the key: a typo in a
+protected list must never quietly leave something live unprotected.
+``lab-profile.example.toml`` shows every key.
 """
 
 from __future__ import annotations
 
 import difflib
 import ipaddress
+import json
 import tomllib
 
 from .config import (
-    DEFAULT_MIST_API,
-    DEFAULT_PVE_API,
     PARK_BRIDGE,
     SANDBOX_BRIDGE_PREFIX,
     SANDBOX_LXC_END,
@@ -24,7 +24,7 @@ from .config import (
 )
 from .errors import LabError
 
-HINT = "Fix the lab profile and start SimRack again. lab-profile.example.toml shows every key."
+HINT = "Fix it on SimRack's setup page and save, or import a fixed profile there. Until then SimRack changes nothing."
 
 
 class ProfileError(LabError):
@@ -37,10 +37,8 @@ _REQUIRED = object()
 SCHEMA: dict[str, dict[str, tuple]] = {
     "proxmox": {
         "node": ("text", _REQUIRED, "pve_node"),
-        "api": ("text", DEFAULT_PVE_API, "pve_api_base"),
     },
     "mist": {
-        "api": ("text", DEFAULT_MIST_API, "mist_api_base"),
         "org_id": ("text", "", "org_id"),
     },
     "management": {
@@ -62,12 +60,19 @@ SCHEMA: dict[str, dict[str, tuple]] = {
         "bridge_prefix": ("text", SANDBOX_BRIDGE_PREFIX, "sandbox_bridge_prefix"),
         "park_bridge": ("text", PARK_BRIDGE, "park_bridge"),
     },
+    "assistants": {
+        "risky": ("bool", False, "assistant_risky"),
+    },
 }
 
 #: Keys SimRack no longer reads, and where each setting belongs now.
 RETIRED = {
     "proxmox.hookscript": "Proxmox lets only root@pam set a hookscript, so it goes on the vJunos template "
-    "once (qm set <template> --hookscript ...) and every clone copies it. Delete this line."
+    "once (qm set <template> --hookscript ...) and every clone copies it. Saving the setup page drops this key.",
+    "proxmox.api": "The Proxmox address is now set next to the Proxmox token on the setup page, so the token "
+    "is only ever sent where you chose. Saving the setup page drops this key.",
+    "mist.api": "The Mist region is now set next to the Mist token on the setup page, so the token "
+    "is only ever sent where you chose. Saving the setup page drops this key.",
 }
 
 #: The file must have these, even if a protected list is empty: saying so is the point.
@@ -83,9 +88,14 @@ def load_profile(path: str) -> dict:
         raise ProfileError(f"Cannot read lab profile {path}: {error.strerror or error}.", detail=HINT) from error
     except tomllib.TOMLDecodeError as error:
         raise ProfileError(f"Lab profile {path} is not valid TOML: {error}.", detail=HINT) from error
+    return profile_values(raw, path)
+
+
+def profile_values(raw: dict, path: str = "", hint: str = HINT) -> dict:
+    """Check a lab profile's sections and keys; return them as ``Settings`` keyword arguments."""
 
     def fail(problem: str) -> ProfileError:
-        return ProfileError(f"Lab profile {path}: {problem}", detail=HINT)
+        return ProfileError(f"Lab profile {path}: {problem}" if path else problem, detail=hint)
 
     for section in raw:
         if section not in SCHEMA:
@@ -119,6 +129,29 @@ def load_profile(path: str) -> dict:
 
     _check_pool_inside(values["mgmt_pool"], values["mgmt_cidr"], fail)
     return values
+
+
+def dump_profile(raw: dict) -> str:
+    """A lab profile as TOML, its sections and keys in the order SCHEMA lists them."""
+    lines = ["# SimRack's lab profile, saved from its setup page.", ""]
+    for section, keys in SCHEMA.items():
+        if isinstance(raw.get(section), dict):
+            lines.append(f"[{section}]")
+            lines += [f"{key} = {_toml(raw[section][key])}" for key in keys if key in raw[section]]
+            lines.append("")
+    return "\n".join(lines)
+
+
+def _toml(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml(item) for item in value) + "]"
+    raise ProfileError(f"{value!r} cannot be written to a lab profile.")
 
 
 def _did_you_mean(word: str, choices) -> str:
@@ -161,6 +194,10 @@ def _check(kind: str, value, name: str, fail):
         return (value[0], value[1])
     if kind == "pool":
         return _pool(value, name, fail)
+    if kind == "bool":
+        if not isinstance(value, bool):
+            raise fail(f"{name} must be true or false.")
+        return value
     raise AssertionError(f"unknown kind {kind}")
 
 

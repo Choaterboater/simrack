@@ -6,13 +6,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Needs root: the Proxmox API token is full-privilege and the Mist adoption
+# Needs root: sandbox bridges are made with ip link, and the Mist adoption
 # console is a root-owned unix socket under /var/run/qemu-server.
 User=root
 WorkingDirectory=/opt/simrack
-# simrack.env holds the tokens and SIMRACK_PROFILE, the lab profile that says
-# what is live. Without a profile SimRack stays read-only.
-EnvironmentFile=/opt/simrack/simrack.env
+# Optional. simrack.env holds SIMRACK_TOKEN, needed only to listen beyond
+# 127.0.0.1 (see README, Deploy). The setup page sets everything else and
+# keeps it in state/.
+EnvironmentFile=-/opt/simrack/simrack.env
 ExecStart=/usr/bin/python3 -m simrack serve --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=5

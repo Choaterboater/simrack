@@ -1,7 +1,8 @@
 """Juniper Mist API client (standard library only).
 
-Read-only unless ``Settings.mist_writes_enabled`` is set by the operator, and
-even then every write is scoped to a sandbox site that the caller owns.
+Every write asks the write gate first: SimRack's access check (access.py), which
+asks Mist what the token may do. Without a gate no write goes out. Every write
+is also scoped to a sandbox site that the caller owns.
 """
 
 from __future__ import annotations
@@ -11,18 +12,25 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Callable
 
-from .config import NO_PROFILE, Settings
+from .access import Refusal, raise_if
+from .config import Settings
 from .errors import BackendError, GuardrailViolation, NotConfigured
 
 
 class MistClient:
-    def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or Settings()
-        self.base = self.settings.mist_api_base.rstrip("/")
-        self.token = self.settings.mist_token
-        self.org_id = self.settings.org_id
+    def __init__(self, settings: Settings | None = None, *, write_gate: Callable[[], Refusal | None] | None = None) -> None:
+        self.use(settings or Settings())
         self._ssl = ssl.create_default_context()
+        #: Why a write may not go out, or None when it may.
+        self.write_gate = write_gate or _no_gate
+
+    def use(self, settings: Settings) -> None:
+        self.settings = settings
+        self.base = settings.mist_api_base.rstrip("/")
+        self.token = settings.mist_token
+        self.org_id = settings.org_id
 
     # -- transport --------------------------------------------------------------
 
@@ -30,17 +38,10 @@ class MistClient:
         if not self.token:
             raise NotConfigured(
                 "Mist API token is not set.",
-                detail="Export MIST_TOKEN (an org admin token) in the service environment. "
-                "Without it the front end is read-only and every Mist action is disabled.",
+                detail="Add a Mist token on SimRack's setup page. Without one every Mist action is off.",
             )
-        if write and not self.settings.mist_writes_enabled:
-            if not self.settings.profile_path:
-                raise GuardrailViolation("Mist writes are off: no lab profile is loaded.", detail=NO_PROFILE)
-            raise GuardrailViolation(
-                "Mist writes are disabled.",
-                detail="Set SIMRACK_MIST_WRITES=1 to let the front end push fabric changes. "
-                "Take a snapshot first: the revert button needs one.",
-            )
+        if write:
+            raise_if(self.write_gate())
         url = f"{self.base}{path}"
         data = json.dumps(payload).encode() if payload is not None else None
         request = urllib.request.Request(url, data=data, method=method)
@@ -69,11 +70,13 @@ class MistClient:
         except json.JSONDecodeError as error:
             raise BackendError("Mist API returned a non-JSON response.") from error
 
+    def whoami(self) -> dict:
+        """The token's privileges: GET /self lists each scope and role, for a user or an org token."""
+        reply = self._request("GET", "/self")
+        return reply if isinstance(reply, dict) else {}
+
     def configured(self) -> bool:
         return bool(self.token)
-
-    def writes_enabled(self) -> bool:
-        return bool(self.token) and self.settings.mist_writes_enabled
 
     # -- org / site -------------------------------------------------------------
 
@@ -140,3 +143,7 @@ class MistClient:
 
     def organizations(self) -> list[dict]:
         return self._request("GET", "/orgs") or []
+
+
+def _no_gate() -> Refusal:
+    return (GuardrailViolation, "Mist changes are off.", "Nothing has checked what this Mist token may do.")

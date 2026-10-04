@@ -7,8 +7,14 @@ import sys
 
 from .api import serve
 from .config import Settings
-from .profile import ProfileError
 from .service import SandboxManager
+
+
+def _seconds(text: str) -> float:
+    seconds = float(text)
+    if not seconds > 0:
+        raise argparse.ArgumentTypeError(f"{text} is not a number of seconds above 0")
+    return seconds
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,12 +27,31 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("state", help="print the inventory JSON and exit")
     sub.add_parser("recipes", help="list the built-in fabric recipes")
+    mcp = sub.add_parser("mcp", help="let an assistant drive SimRack over MCP, on stdin and stdout")
+    mcp.add_argument("--url", default="http://127.0.0.1:8787", help="where SimRack's web front end listens")
+    mcp.add_argument(
+        "--wait",
+        type=_seconds,
+        default=50.0,
+        help="seconds a tool waits for SimRack before handing the assistant a job to check on; "
+        "keep it under the assistant's own time limit for a call (default 50)",
+    )
+    mcp.add_argument(
+        "--poll",
+        type=_seconds,
+        default=15.0,
+        help="seconds between looks at SimRack, to tell the assistant when the tools on offer change (default 15)",
+    )
 
     args = parser.parse_args(argv)
-    try:
-        settings = Settings.from_env()
-    except ProfileError as error:
-        print(f"simrack: {error.message}\n{error.detail}", file=sys.stderr)
+    if args.command == "mcp":
+        from .mcp import main as serve_mcp
+
+        return serve_mcp(args.url, wait=args.wait, poll=args.poll)
+    settings = Settings.load()
+    for problem in settings.problems:
+        print(f"simrack: {problem['error']}\n{problem['detail']}", file=sys.stderr)
+    if settings.problems and args.command == "state":
         return 2
 
     if args.command == "recipes":
@@ -49,10 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     if host not in ("127.0.0.1", "::1", "localhost") and not settings.extras.get("token"):
         print("refusing to bind publicly without a token; set SIMRACK_TOKEN", file=sys.stderr)
         return 2
-    if settings.allow_writes:
-        restored = manager.ensure_bridges()
-        if restored:
-            print(f"[simrack] re-created sandbox bridges: {', '.join(restored)}", flush=True)
+    restored = manager.ensure_bridges()
+    if restored:
+        print(f"[simrack] re-created sandbox bridges: {', '.join(restored)}", flush=True)
     httpd = serve(manager, host, port, token=settings.extras.get("token", ""))
     try:
         httpd.serve_forever()

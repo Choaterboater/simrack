@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import unittest
 
-from simrack.errors import BackendError, GuardrailViolation
+from simrack.errors import BackendError
 from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
 
 ADVICE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ADVICE.md")
@@ -34,11 +34,11 @@ class TestTeardownRedoAndFix(unittest.TestCase):
 
     def test_teardown_removes_every_guest_bridge_and_the_mist_site(self):
         sandbox_vmids = {n.vmid for n in self.sandbox.nodes}
-        removed = self.manager.teardown(self.sandbox, confirm=True)
+        removed = self.manager.teardown(self.sandbox)
         self.assertEqual(len(removed["nodes"]), 2)
         self.assertEqual(len(removed["bridges"]), 2)  # the recipe cable plus the one added by hand
         self.assertEqual(removed["mist_site"], self.sandbox.mist_site_name)
-        self.assertNotIn(self.sandbox.mist_site_id, self.mist.sites)
+        self.assertNotIn(self.sandbox.mist_site_id, self.mist.site_records)
         for vmid in sandbox_vmids:
             self.assertNotIn(vmid, self.px.vms, f"teardown left sandbox guest {vmid} behind")
         for vmid in self.live.production_vmids:
@@ -47,18 +47,14 @@ class TestTeardownRedoAndFix(unittest.TestCase):
         for bridge in self.px.networks:
             self.assertTrue(bridge.startswith("vmbr") or bridge in self.live.production_bridges, f"teardown left bridge {bridge} behind")
 
-    def test_teardown_needs_confirmation_and_can_keep_mist(self):
-        with self.assertRaises(GuardrailViolation) as caught:
-            self.manager.teardown(self.sandbox, confirm=False)
-        self.assertIn("confirm", str(caught.exception))
-
-        kept = self.manager.teardown(self.sandbox, confirm=True, keep_mist=True)
+    def test_teardown_can_keep_mist(self):
+        kept = self.manager.teardown(self.sandbox, keep_mist=True)
         self.assertIsNone(kept["mist_site"])
-        self.assertIn(self.sandbox.mist_site_id, self.mist.sites, "keep_mist leaves the site for inspection")
+        self.assertIn(self.sandbox.mist_site_id, self.mist.site_records, "keep_mist leaves the site for inspection")
 
     def test_the_lab_can_be_rebuilt_immediately_after_teardown(self):
         first_site = self.sandbox.mist_site_id
-        self.manager.teardown(self.sandbox, confirm=True)
+        self.manager.teardown(self.sandbox)
         rebuilt = self.manager.create_sandbox("rebuild", "collapsed-core", template_vmid=320, with_mist_site=True)
         self.assertNotEqual(rebuilt.mist_site_id, first_site, "a rebuild must get a fresh site, never reuse the old id")
         self.assertEqual(len(rebuilt.nodes), 2)
@@ -86,7 +82,7 @@ class TestTeardownRedoAndFix(unittest.TestCase):
 
     def test_teardown_refuses_to_reach_the_live_mist_site(self):
         self.sandbox.mist_site_id = sorted(self.live.production_mist_sites)[0]
-        removed = self.manager.teardown(self.sandbox, confirm=True)
+        removed = self.manager.teardown(self.sandbox)
         self.assertIn("left in place", removed["mist_site"])
 
     def test_the_runbook_answers_tear_down_rebuild_and_fix(self):

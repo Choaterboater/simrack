@@ -3,9 +3,11 @@
 A sandbox front end for a **vJunos-switch + Juniper Mist lab on Proxmox VE**.
 
 People can build, re-cable, break and rebuild a lab from a web page, without
-touching Proxmox by hand and without any risk to the live lab. One file, the lab
-profile, says what is live. SimRack refuses any action that would touch what it
-lists, and without a profile it changes nothing.
+touching Proxmox by hand and without any risk to the live lab. SimRack's setup
+page saves the lab profile, which says what is live. SimRack refuses any action
+that would touch what it lists, and until a profile is saved it changes nothing.
+Its Proxmox and Mist tokens decide what else it may change: there is no switch
+to turn writes on. An assistant can drive it too, through its MCP server.
 
 Standard library only (Python 3.11 or later). No pip, no build step, nothing to
 install on the host. The page is plain files in `simrack/static/`
@@ -23,8 +25,9 @@ fakes; only part of it has run on a real host.
 | Run | building a sandbox from a shape, adopting its switches into Mist over the serial console | **untested on real gear** |
 | Drive | building the sandbox's fabric in Mist, checking the cabling three ways | **untested on real gear** |
 
-The lab profile came last: this profile-driven version has not run on a real
-host yet. Start read-only, and read `ADVICE.md` before you turn writes on.
+The setup page, token-decided access and the MCP server came last: this version
+has not run on a real host yet. Every change asks first, so look around before
+you answer Yes, and read `ADVICE.md` before the first build.
 
 ## What it does
 
@@ -43,26 +46,62 @@ host yet. Start read-only, and read `ADVICE.md` before you turn writes on.
 | **Tear down** | Deletes the guests, the bridges and the Mist site. Never the live lab. |
 | **Import (Shapes)** | Reads a Mist EVPN topology you paste or drop, and previews it as a sandbox plan: switches, cabling, and whether it fits on the host. Nothing is built and nothing is sent to Mist. |
 | **Build (Shapes)** | Builds a sandbox from a shape: the switches you tick, cabled the way Mist saw them, plus an optional Mist site of its own. When the whole shape doesn't fit, a slice with a switch from each tier is pre-ticked. Cables that can't be made are left out and listed with the reason. |
-| **Adopt into Mist** | Logs in over the switch's serial console, sets the sandbox's root password, turns on DHCP on fxp0 and enters the sandbox site's adoption commands. If Junos refuses a line, the change is rolled back. Needs writes, `MIST_TOKEN`, `SIMRACK_MIST_WRITES=1` and the sandbox's own Mist site. |
+| **Adopt into Mist** | Logs in over the switch's serial console, sets the sandbox's root password, turns on DHCP on fxp0 and enters the sandbox site's adoption commands. If Junos refuses a line, the change is rolled back. Needs SimRack to be able to change both the lab and Mist, and the sandbox's own Mist site. |
 | **Join Mist** | A checklist on the sandbox page: the site, each switch's adoption, Build the fabric in Mist (with the values it sends, and Copy as text), then Check the cabling. **Reveal** shows the sandbox's root password; it works read-only and is never written to Activity. |
+| **Setup** | The tokens and the lab profile: what is live, the management network, the sandbox ranges, what an assistant may do. It opens by itself until a profile is saved. See [The lab profile](#the-lab-profile). |
+| **Pause / Resume** | Stops every change until you resume, even across restarts; looking still works. A build under way stops at its next step and removes what it made. |
+
+Every button that changes something asks first: **1 No · 2 Yes, this once · 3 Yes
+for this session**, and Enter or Esc is No. Tear down, revert, power off, delete
+and setup saves ask every time. A change SimRack may not make right now has its
+button turned off, and the top bar says why.
 
 ## The lab profile
 
-One TOML file per host says what is live. Copy `lab-profile.example.toml`, fill
-it in for your lab and point `SIMRACK_PROFILE` at it.
+The setup page (**Setup** in the top bar) saves one TOML file per host,
+`state/lab-profile.toml`, that says what is live. You never edit it by hand.
+With a Proxmox token the page lists the host's guests, containers, bridges and
+subnets, and with a Mist token the org's sites; until a profile is saved every
+one is ticked as live. Type anything it cannot see into **Also protect**, such
+as bridges in files that `/etc/network/interfaces` sources (ADVICE.md,
+section 7). Later visits mark guests found since as **new** and saved ones that
+are gone as **not found now**. **Export** and **Import…** move the file between
+hosts; `lab-profile.example.toml` shows every key.
 
 | Table | Keys | Meaning |
 |---|---|---|
-| `[proxmox]` | `node` (required), `api` | The node name, spelled exactly as Proxmox spells it: the API is case sensitive. Leave `api` at its default, the host itself: SimRack checks the certificate of any other address. |
-| `[mist]` | `api`, `org_id` | Your org's API host (`api.mist.com`, `api.gc1.mist.com`, `api.eu.mist.com`…) and org. |
+| `[proxmox]` | `node` (required) | The node name, spelled exactly as Proxmox spells it: the API is case sensitive. |
+| `[mist]` | `org_id` | Your org. Its cloud is picked beside the Mist token. |
 | `[management]` | `bridge`, `cidr`, `pool` (required), `vlan` | Where fxp0 goes. Leave `vlan` out when the management network is untagged. The pool must sit inside `cidr`. |
 | `[protected]` | `vmids`, `lxc`, `bridges`, `mist_sites`, `subnets` | Everything live. SimRack refuses any action that would touch these. |
 | `[sandbox]` | `vmids`, `lxc`, `bridge_prefix`, `park_bridge` | Optional. The defaults are 320-399, 350-399, `sbx` and `sbxpark`. The optional hookscript matches `sbx*`, so change it too if you change the prefix. |
+| `[assistants]` | `risky` | Optional, off by default. Lets an assistant tear down sandboxes, revert, delete switches and type at a switch's console through the [MCP](#mcp) server. |
 
 A mistake in the profile (an unknown key, a wrong type, a pool outside its
-subnet) stops start-up and names the key, because a typo in a protected list
-would otherwise leave something live unprotected. Without a profile SimRack
-starts read-only and the page says why. Tokens never go in the profile.
+subnet) leaves the whole file out, so SimRack changes nothing, and the setup
+page names the key: a typo in a protected list would otherwise leave something
+live unprotected. A key from an older version counts as a mistake until the
+page saves the profile again. Tokens never go in the profile.
+
+### Tokens
+
+The setup page's **Connect** part keeps the tokens in `state/tokens.json`
+(mode 600), each with the one address it may be sent to. A new address needs
+the token pasted again, and a saved token is never shown or sent anywhere else.
+
+- **Proxmox.** The page shows `pveum` commands to run as root on the host. They
+  make a `simrack@pve` token with one role that holds just the privileges
+  SimRack checks: the VM privileges on `/vms`, `Sys.Audit` on the node, the two
+  storages, and `SDN.Use` on the local network zone. A root token works too,
+  but it may change anything on the host. The address defaults to the host
+  itself, `https://127.0.0.1:8006/api2/json`; change it only when SimRack runs
+  somewhere else.
+- **Mist** (optional). Pick the cloud and paste an org API token. Super User or
+  Network Admin lets SimRack build Mist sites; Observer only looks.
+
+SimRack asks each token what it may do (Proxmox `GET /access/permissions`, Mist
+`GET /self`, for the profile's org) and offers only those changes. It keeps the
+answers for 30 seconds.
 
 ## The safety model
 
@@ -89,7 +128,8 @@ the tests prove it:
   every start it makes, because a start gives the guest new taps. A start from
   the Proxmox GUI keeps LACP only if the template carries the optional
   hookscript (see Deploy).
-  With writes on, bridges a reboot removed are re-created when the service starts
+  While SimRack may change the lab, bridges a reboot removed are re-created when
+  the service starts
 - switches are made with only settings an API token may set. A clone copies the
   template's; a boot from an image gets `smbios1` product `VM-VEX` and
   `cpu: host`. SimRack never sets `args` or `hookscript`: Proxmox lets only
@@ -127,40 +167,41 @@ the tests prove it:
   replayed. A revert puts the sandbox's own password back where one was, so a
   password set by hand in Mist comes back as the sandbox's. Snapshots are
   deleted when a teardown completes, even with `keep_mist`
-- certificates are checked on every call to Mist, and to Proxmox unless `api`
-  is the host itself (loopback, where its self-signed certificate never leaves
-  the machine). Where the network inspects TLS, Mist calls fail until the
-  inspecting CA is in the host's trust store
-- it is **read-only unless** a profile is loaded and `SIMRACK_ALLOW_WRITES=1`
+- certificates are checked on every call to Mist, and to Proxmox unless its
+  address is the host itself (loopback, where its self-signed certificate never
+  leaves the machine). Where the network inspects TLS, Mist calls fail until
+  the inspecting CA is in the host's trust store
+- it changes nothing unless a profile is saved, it is not paused, and the
+  token may make that change: the Proxmox token for the lab, a Mist token with
+  Super User or Network Admin on the profile's org for Mist. No setting or
+  environment variable overrides that
+- tokens go only to the address saved beside them, over HTTPS, and a Mist
+  token only to a Mist cloud
 - shapes are local files in `state/shapes/`. Importing and deleting them works
   read-only and never calls Proxmox or Mist. Only the fabric's shape is kept
   (names, roles, pods, ports, AS numbers); addresses, subnets and port configs
   are dropped. Bodies are capped at 4 MB and shapes at 64 switches
-- it binds 127.0.0.1 and refuses a public bind without a token. Without a
+- it binds 127.0.0.1 and refuses a public bind without `SIMRACK_TOKEN`. Without a
   token it answers only requests addressed to `127.0.0.1`, `localhost` or `::1`,
-  so a web page that renames itself to that address (DNS rebinding) is refused
+  so a web page that renames itself to that address (DNS rebinding) is refused.
+  Once a token is set, every API call needs it, even on loopback
 
 ## Run it
 
 ```bash
 # on the Proxmox host, from the project folder
-export SIMRACK_PROFILE=/opt/simrack/lab-profile.toml
-python3 -m simrack state          # read-only inventory
+python3 -m simrack serve          # http://127.0.0.1:8787; the setup page opens first
+python3 -m simrack state          # the inventory as JSON; changes nothing
 python3 -m simrack recipes        # the built-in fabric blueprints
-python3 -m simrack serve          # http://127.0.0.1:8787
+python3 -m simrack mcp            # an MCP server for an assistant; see MCP
 ```
 
-Environment:
+Environment, both optional. Everything else is set on the setup page.
 
 | Variable | Meaning |
 |---|---|
-| `SIMRACK_PROFILE` | the lab profile; without it SimRack is read-only |
-| `SIMRACK_PVE_TOKEN` | `root@pam!simrack=<secret>` |
-| `MIST_TOKEN` | a Mist API token with admin on the profile's org; without it every Mist action is disabled |
-| `SIMRACK_MIST_WRITES` | `1` to let the front end push fabric changes to Mist (needs a profile) |
-| `SIMRACK_ALLOW_WRITES` | `1` to allow changes (needs a profile); anything else, or unset, is read-only |
-| `SIMRACK_TOKEN` | bearer token; required if binding anything but 127.0.0.1 |
-| `SIMRACK_STATE_DIR` | where sandboxes, shapes and passwords are kept (default `/opt/simrack/state`) |
+| `SIMRACK_STATE_DIR` | where the lab profile, the tokens, sandboxes, shapes and passwords are kept (default `/opt/simrack/state`) |
+| `SIMRACK_TOKEN` | a bearer token for the page's API. Required to bind anything but 127.0.0.1; once set, every API call needs it, the MCP server's too |
 
 The page follows the computer's light or dark setting. Day looks like the Mist
 portal: navy side list, white top bar, light content. The sun or moon at the end
@@ -210,64 +251,101 @@ python3 -m unittest discover -s tests -t . -v
 | `test_case12_build_from_shape.py` | building from a shape: switch ports and the park bridge, slices and left-out cables, the root password, the serial console, adopting into Mist, the HTTP routes and the Host check |
 | `test_case13_drive.py` | building the fabric in Mist from the sandbox's cables, and checking the cabling three ways |
 | `test_case14_repo_hygiene.py` | the repository ships no real network's identifiers: placeholder UUIDs and MACs only |
-| `test_case15_lab_profile.py` | the profile loads into the settings; a mistake stops start-up and names the key |
+| `test_case15_lab_profile.py` | the profile loads into the settings; a mistake leaves the whole file out and names the key |
 | `test_case16_no_profile_read_only.py` | with no profile every write is refused, and the status says why |
 | `test_case17_profile_guardrails.py` | the guardrails protect what the profile lists, and nothing is hard-coded |
 | `test_case18_mgmt_pool.py` | management addresses come from the profile's pool; a full pool is refused; no vlan leaves fxp0 untagged |
 | `test_case19_real_gear.py` | what real Proxmox and Mist require: only token-settable fields, LACP after each start, certificate checks, cleanup of only what a step created, template-only clones, private Mist snapshots, topologies reverted in full |
+| `test_case20_token_decides.py` | the tokens decide what SimRack may change: Proxmox permissions and the Mist role, no environment switch, and the pause |
+| `test_case21_setup_page.py` | the setup page: what it finds on the host, saving, importing and exporting the profile, the tokens and the addresses they may go to |
+| `test_case22_mcp.py` | the MCP server: the handshake, tools offered by what SimRack may do, the risky tick, Casper's change kinds, jobs that outlast a call, and telling the assistant when the tools change |
 
 ## Deploy
 
 SimRack lives at `/opt/simrack` on the Proxmox host and runs as the
-`simrack` systemd unit. Once per host, before the first deploy:
+`simrack` systemd unit, bound to 127.0.0.1:8787.
 
-1. Create a Proxmox API token: `pveum user token add root@pam simrack --privsep 0`.
-   It prints the secret once.
-2. Write the lab profile. Keep it as `lab-profile.toml` in the project root (git
-   ignores it and the deploy copies it), or create
-   `/opt/simrack/lab-profile.toml` on the host.
-3. Create `/opt/simrack/simrack.env` on the host, mode 600. The service does
-   not start without it:
+Optional, once per host: to keep LACP open when someone starts a switch from
+the Proxmox GUI, put the hookscript on the template, as root:
+`qm set <template> --hookscript local:snippets/simrack-sbx.sh`. Every clone
+copies it. The deploy copies the script to `/var/lib/vz/snippets/`, and the
+`local` storage must allow the `snippets` content type. SimRack itself never
+sets a hookscript: Proxmox lets only `root@pam` do that, not an API token.
 
-   ```sh
-   SIMRACK_PROFILE=/opt/simrack/lab-profile.toml
-   SIMRACK_PVE_TOKEN=root@pam!simrack=<secret>
-   SIMRACK_ALLOW_WRITES=0
-   # MIST_TOKEN=<org admin token>
-   # SIMRACK_MIST_WRITES=0
-   ```
-
-4. Optional: to keep LACP open when someone starts a switch from the Proxmox
-   GUI, put the hookscript on the template once, as root:
-   `qm set <template> --hookscript local:snippets/simrack-sbx.sh`. Every clone
-   copies it. The deploy copies the script to `/var/lib/vz/snippets/`, and the
-   `local` storage must allow the `snippets` content type. SimRack itself never
-   sets a hookscript: Proxmox lets only `root@pam` do that, not an API token.
-
-Then, for the first deploy and every update:
+For the first deploy and every update:
 
 ```bash
 SIMRACK_HOST=<ssh host> ./deploy/deploy.sh   # copies, runs the tests (a failure stops it), installs the unit, restarts, smoke tests
 ssh -N -L 8787:127.0.0.1:8787 <ssh host>      # then open http://127.0.0.1:8787
 ```
 
-`deploy.sh` does not back up the copy already on the host; take one first
-(`tar -czf /root/simrack.bak.tgz -C /opt simrack`). It ships **read-only**
-(`SIMRACK_ALLOW_WRITES=0`); flip that only when you are ready, and read
-`ADVICE.md` first.
+On the first visit the setup page opens. Run the token commands it shows as
+root on the host, paste the token it prints, check what the page ticked as live,
+and save. The deploy never copies over `state/`, so the profile, the tokens and
+the pause stay on the host across updates.
 
-```bash
-systemctl status simrack
-systemctl edit simrack        # override the env if you want writes
+`deploy.sh` does not back up the copy already on the host; take one first
+(`tar -czf /root/simrack.bak.tgz -C /opt simrack`). Read `ADVICE.md` before the
+first build.
+
+To listen beyond 127.0.0.1, put `SIMRACK_TOKEN=<long random string>` in
+`/opt/simrack/simrack.env` (mode 600; the unit reads it when it exists), then
+run `systemctl edit simrack` and give the unit an empty `ExecStart=` line
+followed by its own `ExecStart=` with the new `--host`. An SSH tunnel is still
+the better way in.
+
+## MCP
+
+`python3 -m simrack mcp` lets an assistant drive SimRack. It is a Model Context
+Protocol server on stdin and stdout that calls SimRack's own web API, so the
+service must be running. The assistant's host labels every tool as a look or a
+change and asks before each change. For Casper, add this to
+`~/.casper/mcp.json`, then type `/mcp connect simrack`:
+
+```json
+{"mcpServers": {"simrack": {"command": "ssh",
+  "args": ["-T", "-o", "BatchMode=yes", "<ssh host>", "cd /opt/simrack && exec python3 -m simrack mcp"]}}}
 ```
+
+Casper gives the server a small environment: if ssh needs your agent, add
+`"env": {"SSH_AUTH_SOCK": "${SSH_AUTH_SOCK}"}`. When SimRack has a
+`SIMRACK_TOKEN`, have the host read it, so it never sits in the assistant's
+config: `cd /opt/simrack && set -a && . ./simrack.env && exec python3 -m simrack mcp`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--url` | `http://127.0.0.1:8787` | where SimRack listens |
+| `--wait` | 50 | seconds a tool waits for SimRack before it answers "Still running" with a job number for `job_result`. Keep it under the assistant's own limit for one call: Casper's is 90 s (`"callTimeout"`) |
+| `--poll` | 15 | seconds between looks at SimRack, to tell the assistant when the tools on offer change |
+
+The tools follow what SimRack may do right now, so a pause or a new token shows
+within `--poll` seconds:
+
+| Tools | Offered |
+|---|---|
+| `state`, `list_sandboxes`, `get_sandbox`, `list_recipes`, `list_shapes`, `check_cabling`, `job_result` | always |
+| `mist_health`, `mist_save_point` | with a Mist token |
+| `build_sandbox`, `build_from_shape`, `power_node`, `add_cable`, `move_cable`, `remove_cable`, `save_point` | while SimRack may change the lab |
+| `mist_create_site`, `mist_build_fabric`, `adopt_switch` | while it may change the lab and Mist |
+| `tear_down`, `delete_node`, `revert_guests`, `console_command`, and `revert_mist` (which also needs Mist) | as above, and only when the setup page ticks **Assistants** (`[assistants] risky`) |
+
+Looks carry `readOnlyHint`. `check_cabling` mends drifted cables while SimRack
+may change the lab, so then it is labelled a change. Changes that throw work
+away carry `destructiveHint`, and every change carries a kind in
+`_meta["casper/change-kind"]`: `delete` for `tear_down`, `delete_node`,
+`remove_cable` and `revert_mist`; `disruptive` for `power_node`,
+`revert_guests` and `console_command`; `config` for the rest. In Casper,
+writes start off (`/mcp writes simrack`), deletes stay off until
+`/mcp allow simrack`, and disruptive changes ask every time. Changes run one at
+a time, as they do from the page.
 
 ## Agent skill
 
 `skills/simrack/SKILL.md` is a short runbook for a coding agent: what to read
-first, which calls change things (each marked `WRITE:`), and the traps. It uses
-the section layout of Casper's network skills, stays under 6 KiB and points at
-this README and `ADVICE.md` for detail, so keep the three in step. Install it by
-copying the folder:
+first, which tools change things (each marked `WRITE:`), and the traps. It
+drives SimRack through the MCP server, uses the section layout of Casper's
+network skills, stays under 6 KiB and points at this README and `ADVICE.md` for
+detail, so keep the three in step. Install it by copying the folder:
 
 ```bash
 mkdir -p ~/.casper/skills ~/.agents/skills
@@ -278,10 +356,11 @@ cp -R skills/simrack ~/.agents/skills/    # agents that read ~/.agents/skills
 ## Known gaps
 
 Read `ADVICE.md` section 6. The important ones: nothing has been built on a
-real host with writes on; Run and Drive are untested on real gear (Build fabric
-in Mist is tested against a fake Mist only, and the serial login against
-scripted replies, not a real vJunos console); and the profile-driven version
-has not run on a real host. Watch the first build, adoption and fabric build.
+real host; Run and Drive are untested on real gear (Build fabric in Mist is
+tested against a fake Mist only, and the serial login against scripted replies,
+not a real vJunos console); and the setup page, the token checks and the MCP
+server have not run on a real host. Watch the first build, adoption and fabric
+build.
 
 ## License
 

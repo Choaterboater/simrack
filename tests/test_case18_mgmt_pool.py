@@ -12,7 +12,7 @@ import unittest
 from simrack.errors import GuardrailViolation
 from simrack.service import SandboxManager
 from tests.fakes import FakeMist, FakeProxmox, TempDir
-from tests.test_case17_profile_guardrails import WRITES, profile_settings
+from tests.test_case17_profile_guardrails import profile_settings
 
 #: Two addresses on an untagged management network.
 SMALL_LAB = """
@@ -33,7 +33,7 @@ class TestManagementPool(unittest.TestCase):
         self._tmp = TempDir()
         self.tmp = self._tmp.__enter__()
         self.px = FakeProxmox(templates=[320])
-        settings = profile_settings(self.tmp, SMALL_LAB, **WRITES)
+        settings = profile_settings(self.tmp, SMALL_LAB, tokens=True)
         self.manager = SandboxManager(settings, proxmox=self.px, mist=FakeMist())
 
     def tearDown(self):

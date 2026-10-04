@@ -8,14 +8,16 @@ const PORTS = Array.from({ length: 10 }, (_, i) => "ge-0/0/" + i);
 let S = null;                                   // last /api/state
 let sel = localStorage.getItem("lf_sel") || ""; // selected sandbox
 let focusItem = null;                           // {t:"node",id} | {t:"cable",id}
-let busy = false, creating = false, armedAt = 0, authNeeded = false;
+let busy = false, creating = false, authNeeded = false;
 let token = localStorage.getItem("simrack_token") || "";
 const log = [];
 const consoleOut = {};
 let moveFrom = {};                              // {bridge,node}: which end the move form is moving
 let returnTo = null, lastCanvasW = 0, canvasRO = null;
-let view = localStorage.getItem("lf_view") || ""; // "" (sandboxes) | "import" | "shape:<name>"
+let view = localStorage.getItem("lf_view") || ""; // "" (sandboxes) | "setup" | "import" | "shape:<name>"
 let prevView = "", introPending = false;
+let setupPage = null, setupErr = "", setupLoading = false; // the setup page as last read
+let autoSetup = false;                          // a SimRack with no lab profile opens setup once
 const picks = {};                               // shape name -> {set, touched}: the switches a build would make
 const rootPw = {};                              // sandbox name -> root password, held only after Reveal and only until the view changes
 function setView(v) {
@@ -54,6 +56,8 @@ function renderLog() {
 /* ---------- running an action ---------- */
 async function run(btn, label, fn, after) {
   if (busy) return;
+  if (btn && btn.dataset.ask && !(await ask(btn, label))) return;
+  if (busy) return;
   busy = true;
   const text = btn ? btn.innerHTML : "";
   if (btn) { btn.setAttribute("aria-busy", "true"); if (btn.dataset.busyLabel) btn.textContent = btn.dataset.busyLabel; }
@@ -72,21 +76,41 @@ async function run(btn, label, fn, after) {
   }
 }
 
-/* two-step confirm: first click arms, second within 4 s runs */
-function confirmed(btn) {
-  if (btn.classList.contains("armed")) { btn.classList.remove("armed"); armedAt = 0; return true; }
-  $$("button.armed").forEach(disarm);
-  btn.dataset.orig = btn.innerHTML;
-  btn.textContent = btn.dataset.confirm || "Click again to confirm";
-  btn.classList.add("armed");
-  armedAt = Date.now();
-  btn._t = setTimeout(() => disarm(btn), 4000);
-  return false;
+/* ---------- the yes/no box: every change asks first ----------
+   1 No (also Enter and Esc), 2 Yes this once, 3 Yes for this session. A session yes covers one kind of change
+   (data-ask) until the tab closes; a change that destroys something (data-ask-always) asks every time. */
+const KINDS = { build: "builds", cable: "cable changes", power: "power changes", snapshot: "saved revert points",
+  console: "console commands", mist: "Mist changes", repair: "cabling repairs" };
+function ask(btn, label) {
+  const kind = btn.dataset.ask, always = btn.hasAttribute("data-ask-always"), box = $("#ask");
+  if (!always && sessionStorage.getItem("simrack_ok:" + kind)) return Promise.resolve(true);
+  $("#ask-q").textContent = label + "?";
+  const why = $("#ask-why"); why.textContent = btn.dataset.askWhy || ""; why.hidden = !why.textContent;
+  $("#ask-once").className = always || btn.classList.contains("danger") ? "danger solid" : "primary";
+  $("#ask-session").hidden = always;
+  $("#ask-hint").textContent = "Enter or Esc means No." + (always ? " This one asks every time." : ` 3 stops asking about ${KINDS[kind] || "these"} until this tab closes.`);
+  box.returnValue = "";
+  box.showModal();
+  $('#ask [value="no"]').focus();
+  return new Promise(done => box.addEventListener("close", () => {
+    if (box.returnValue === "session") sessionStorage.setItem("simrack_ok:" + kind, "1");
+    done(box.returnValue === "once" || box.returnValue === "session");
+  }, { once: true }));
 }
-function disarm(btn) {
-  clearTimeout(btn._t);
-  if (btn.classList.contains("armed")) { btn.classList.remove("armed"); btn.innerHTML = btn.dataset.orig; }
-  armedAt = 0;
+$("#ask").addEventListener("keydown", e => {
+  const pick = { 1: "no", 2: "once", 3: "session" }[e.key];
+  if (!pick || (pick === "session" && $("#ask-session").hidden)) return;
+  e.preventDefault(); $("#ask").close(pick);
+});
+async function togglePause(btn) {
+  const pause = !S.paused;
+  btn.disabled = true;
+  try {
+    await api("/api/pause", { paused: pause });
+    note("ok", pause ? "Changes are paused. A change already running stops at its next step." : "Changes are back on.");
+  } catch (e) { note("err", (pause ? "Couldn't pause changes: " : "Couldn't resume changes: ") + e.message); }
+  btn.disabled = false;
+  refresh(true);
 }
 
 function writesOn() { return !!(S && S.writes_enabled); }
@@ -98,13 +122,12 @@ function setWriteDisabled() {
   for (const b of $$("[data-write], [data-mist-read], [data-read]")) {
     if (b.getAttribute("aria-busy") === "true") continue;
     const why = b.hasAttribute("data-write") && !writesOn() ? ((S && S.read_only_reason) || "Read-only")
-      : (b.hasAttribute("data-mist-write") || b.hasAttribute("data-mist-read")) && !mistOn ? "No Mist token (MIST_TOKEN)"
-      : b.hasAttribute("data-mist-write") && !mistWritesOn() ? "Mist writes are off (SIMRACK_MIST_WRITES)"
+      : (b.hasAttribute("data-mist-write") || b.hasAttribute("data-mist-read")) && !mistOn ? "No Mist token yet"
+      : b.hasAttribute("data-mist-write") && !mistWritesOn() ? ((S && S.mist.read_only_reason) || "Mist changes are off")
       : b.dataset.why || (busy ? "Another action is running" : "");
     b.disabled = !!why;
     b.title = why || b.dataset.tip || "";
   }
-  syncTeardown();
 }
 
 /* replace a region's HTML but keep what the user typed, picked and focused (a file input cannot be refilled) */
@@ -213,7 +236,12 @@ function renderTop() {
   } else { $("#ram").textContent = "memory unknown"; $("#fitstat").textContent = ""; }
   const mode = $("#modechip");
   mode.className = "chip " + (S.writes_enabled ? "accent" : "warn");
-  mode.textContent = S.writes_enabled ? "Writes on" : "Read-only";
+  mode.textContent = S.paused ? "Paused" : S.writes_enabled ? "Writes on" : "Read-only";
+  const pb = $("#pausebtn");
+  pb.hidden = !(S.writes_enabled || S.paused);
+  pb.setAttribute("aria-pressed", String(!!S.paused));
+  pb.textContent = S.paused ? "Resume changes" : "Pause changes";
+  pb.title = S.paused ? "Let SimRack change the lab again" : "Stop every change. One already running stops at its next step.";
   const m = S.mist, mc = $("#mistchip");
   mc.className = "chip " + (!m.configured ? "" : m.writes_enabled ? "mist" : "warn");
   mc.textContent = !m.configured ? "Mist: no token" : m.writes_enabled ? "Mist read/write" : "Mist read-only";
@@ -221,6 +249,7 @@ function renderTop() {
   $("#prodvm").textContent = S.production.vmids.join(", ");
   $("#prodbr").textContent = S.production.bridges.join(", ");
   $("#prodmist").textContent = S.production.mist_sites.join(", ") || "none";
+  if (view === "setup") $("#setupbtn").setAttribute("aria-current", "page"); else $("#setupbtn").removeAttribute("aria-current");
 }
 function renderBanner(err) {
   const b = $("#banner");
@@ -232,14 +261,17 @@ function renderBanner(err) {
       <form class="actions" data-form="token"><input name="token" type="password" placeholder="SIMRACK_TOKEN" autocomplete="off"><button class="sm" type="submit">Save token</button></form>`;
     return;
   }
-  if (err) { b.className = "banner err"; b.hidden = false; b.textContent = "Cannot reach the SimRack API: " + err; return; }
-  if (S && S.host.inventory_error) { b.className = "banner err"; b.hidden = false; b.textContent = "Proxmox inventory failed: " + S.host.inventory_error; return; }
-  if (S && !S.writes_enabled) {
-    b.className = "banner"; b.hidden = false;
-    b.textContent = "Read-only. You can look around, but building, cabling and power are off. " + (S.read_only_reason || "");
-    return;
-  }
+  const fix = view === "setup" ? "" : ` <button class="sm" data-act="setup">Open setup</button>`;
+  if (err) { setBanner("err", `<span>${esc("Cannot reach the SimRack API: " + err)}</span>`); return; }
+  if (S && S.host.inventory_error) { setBanner("err", `<span>${esc("Proxmox inventory failed: " + S.host.inventory_error)}</span>${fix}`); return; }
+  if (S && S.paused) { setBanner("", "<span>Changes are paused. You can look around; nothing in the lab changes until you resume them from the top bar.</span>"); return; }
+  if (S && !S.writes_enabled) { setBanner("", `<span>${esc((S.read_only_reason || "Read-only.") + " You can look around, but building, cabling and power are off.")}</span>${fix}`); return; }
   b.hidden = true;
+}
+function setBanner(kind, html) {
+  const b = $("#banner");
+  b.className = kind ? "banner " + kind : "banner"; b.hidden = false;
+  if (b._html !== html) { b.innerHTML = html; b._html = html; }
 }
 function renderRail() {
   const list = $("#list");
@@ -261,13 +293,14 @@ function renderRail() {
 function renderMain() {
   const main = $("#main");
   const s = sandbox(), sh = view.startsWith("shape:") ? shapeOf(view.slice(6)) : null;
-  const want = view === "import" ? "import" : sh ? "shape:" + sh.name : creating || !s ? "create" : "sbx:" + s.name;
+  const want = view === "setup" ? "setup" : view === "import" ? "import" : sh ? "shape:" + sh.name : creating || !s ? "create" : "sbx:" + s.name;
   if (main.dataset.view !== want) {
     const switching = !!main.dataset.view;
     main.dataset.view = want;
     focusItem = null; returnTo = null; lastCanvasW = 0;
     for (const k in rootPw) delete rootPw[k];
-    if (want === "import") main.innerHTML = importShell();
+    if (want === "setup") main.innerHTML = setupShell();
+    else if (want === "import") main.innerHTML = importShell();
     else if (sh) { main.innerHTML = shapeShell(sh); introPending = true; }
     else if (want === "create") {
       main.innerHTML = `<div class="welcome"><h1>${S.sandboxes.length ? "New sandbox" : "Build your first sandbox"}</h1>
@@ -280,7 +313,8 @@ function renderMain() {
     if (switching && scrollY > 0) scrollTo({ top: 0 });
     watchCanvas();
   }
-  if (want === "import") updateImport();
+  if (want === "setup") updateSetup();
+  else if (want === "import") updateImport();
   else if (sh) updateShape(sh);
   else if (want === "create") updateCreate(); else updateSandbox(s);
   setWriteDisabled();
@@ -300,6 +334,281 @@ function updateRecipeNote(form) {
   const fit = $("[data-fit]", form);
   fit.className = "fit" + (head != null && need > head ? " no" : "");
   fit.innerHTML = `${switches} switch${switches === 1 ? "" : "es"}: ${(r.roles || []).map(x => esc(x.name)).join(", ")}<br>Needs <b>${gb(need)}</b> · ${head == null ? "free memory unknown" : `<b>${gb(Math.max(0, head))}</b> available above the ${gb(S.limits.min_free_ram_mb)} reserve`}`;
+}
+
+/* ---------- setup: the tokens, and what in the lab is live ---------- */
+const MIST_CLOUDS = [
+  ["https://api.mist.com/api/v1", "Global 01"], ["https://api.gc1.mist.com/api/v1", "Global 02"],
+  ["https://api.ac2.mist.com/api/v1", "Global 03"], ["https://api.gc2.mist.com/api/v1", "Global 04"],
+  ["https://api.gc4.mist.com/api/v1", "Global 05"], ["https://api.eu.mist.com/api/v1", "EMEA 01"],
+  ["https://api.gc3.mist.com/api/v1", "EMEA 02"], ["https://api.ac6.mist.com/api/v1", "EMEA 03"],
+  ["https://api.gc6.mist.com/api/v1", "EMEA 04"], ["https://api.ac5.mist.com/api/v1", "APAC 01"],
+  ["https://api.gc5.mist.com/api/v1", "APAC 02"], ["https://api.gc7.mist.com/api/v1", "APAC 03"],
+];
+const PROTECT = { vmids: "VMs", lxc: "Containers", bridges: "Bridges", subnets: "Subnets", mist_sites: "Mist sites" };
+const bare = u => String(u || "").trim().replace(/\/+$/, "");
+
+function setupShell() {
+  return `<div class="intake setup">
+    <header class="intake-head setup-head">
+      <div><h1 tabindex="-1">Set up SimRack</h1>
+        <p>Give SimRack a Proxmox token, and a Mist token if you use Mist. Then tick what in the lab is live: SimRack never touches anything ticked.</p></div>
+      <button class="ghost sm" data-act="setup-close">Close</button>
+    </header>
+    <div id="setup-wait"></div>
+    <div id="setup-problems"></div>
+    <section id="setup-connect" aria-labelledby="sec-connect" hidden></section>
+    <section id="setup-lab" aria-labelledby="sec-lab" hidden></section>
+  </div>`;
+}
+async function loadSetup() {
+  if (setupLoading) return;
+  setupLoading = true; setupErr = "";
+  try { setupPage = await api("/api/setup"); } catch (e) { setupErr = e.message; }
+  setupLoading = false;
+  if (view === "setup" && S) renderMain();
+}
+function updateSetup(fresh) {
+  const wait = $("#setup-wait"); if (!wait) return;
+  if (!setupPage && !setupLoading && !setupErr) loadSetup();
+  const page = setupPage, connect = $("#setup-connect"), lab = $("#setup-lab");
+  swap(wait, setupErr ? `<div class="form-err" role="alert"><p>Couldn't read the setup page: ${esc(setupErr)}</p></div>
+      <div class="actions"><button class="sm" data-act="setup-retry">Try again</button></div>`
+    : page ? "" : `<p class="hint" role="status">Asking Proxmox and Mist what is in the lab…</p>`);
+  swap($("#setup-problems"), page ? page.problems.map(p => `<div class="form-err warn">${errHtml(p.error, p.detail)}</div>`).join("") : "");
+  connect.hidden = lab.hidden = !page;
+  if (!page) return;
+  if (connect._page !== page) { connect._page = page; keepOpen(connect, () => swap(connect, connectHtml(page))); }
+  if (lab._page !== page) { lab._page = page; keepOpen(lab, () => paintLab(lab, page, fresh)); }
+}
+/* repaint a region and leave each <details> open or shut as the user left it */
+function keepOpen(el, paint) {
+  const was = {};
+  for (const d of $$("details[data-key]", el)) was[d.dataset.key] = d.open;
+  paint();
+  for (const d of $$("details[data-key]", el)) if (d.dataset.key in was) d.open = was[d.dataset.key];
+}
+/* when the page is read again, what the user changed stays; a page just saved replaces it all */
+function paintLab(el, page, fresh) {
+  const kept = fresh ? [] : $$("[data-touched]", el).map(x => [x.name, x.type === "checkbox" ? x.checked : x.value]);
+  const ae = document.activeElement, back = ae && el.contains(ae) ? reselect(ae) : null;
+  el.innerHTML = labHtml(page);
+  const f = $("form", el);
+  for (const [name, v] of kept) {
+    const x = f.elements.namedItem(name);
+    if (!x || !x.tagName) continue;
+    if (x.type === "checkbox") x.checked = v; else x.value = v;
+    x.setAttribute("data-touched", "");
+  }
+  if (back) { const x = el.querySelector(back); if (x) x.focus({ preventScroll: true }); }
+}
+function connectHtml(page) {
+  const pve = page.tokens.proxmox, mist = page.tokens.mist, saved = bare(mist.api);
+  const clouds = (MIST_CLOUDS.some(([u]) => u === saved) ? MIST_CLOUDS : [[saved, "Saved"], ...MIST_CLOUDS])
+    .map(([u, name]) => `<option value="${esc(u)}"${u === saved ? " selected" : ""}>${esc(name)} · ${esc(u.replace(/^https:\/\//, "").replace(/\/api\/v1$/, ""))}</option>`).join("");
+  const keep = ` <span class="faint">· blank keeps the saved one</span>`;
+  return `<h2 class="sec" id="sec-connect">Connect</h2>
+    <form class="fields" data-form="setup-tokens" autocomplete="off">
+      <fieldset class="group">
+        <legend>Proxmox ${pve.set ? `<span class="chip ok">Token saved</span>` : `<span class="chip warn">No token yet</span>`}</legend>
+        ${pve.set ? `<p class="note">SimRack signs in as <span class="mono">${esc(pve.id)}</span>.</p>` : ""}
+        <label class="f"><span>Token ID and secret${pve.set ? keep : ""}</span>
+          <input name="proxmox_token" type="password" autocomplete="off" spellcheck="false" class="mono" placeholder="simrack@pve!simrack=…"></label>
+        <details data-key="pve-addr"><summary>Address</summary>
+          <label class="f"><span>Proxmox API</span><input name="proxmox_api" class="mono" spellcheck="false" value="${esc(pve.api)}"></label>
+          <p class="note">Change it only if SimRack runs somewhere other than the Proxmox host. A new address needs the token pasted again.</p>
+        </details>
+        <details data-key="pve-token"${pve.set ? "" : " open"}><summary>Make a token that may do only what SimRack needs</summary>
+          <p class="note">Run these as root on the Proxmox host. The last one prints the token's ID and secret: paste that above.</p>
+          <pre>${esc((page.proxmox_token_commands || []).join("\n"))}</pre>
+          <div class="actions"><button type="button" class="sm" data-act="copy-cmds">Copy</button></div>
+          <p class="note">A root token works too (<code>pveum user token add root@pam simrack --privsep 0</code>), but it may change anything on the host.</p>
+        </details>
+      </fieldset>
+      <fieldset class="group">
+        <legend>Mist ${mist.set ? `<span class="chip ok">Token saved</span>` : `<span class="chip plain">optional</span>`}</legend>
+        <label class="f"><span>Cloud</span><select name="mist_api" class="mono">${clouds}</select></label>
+        <label class="f"><span>API token${mist.set ? keep : ""}</span>
+          <input name="mist_token" type="password" autocomplete="off" spellcheck="false" class="mono"></label>
+        <p class="note">Make one in Mist under Organization › Settings › API Token. With Super User or Network Admin, SimRack can build Mist sites; with Observer, it only looks. A new cloud needs the token pasted again.</p>
+      </fieldset>
+      <div class="form-err" data-setup-tokens-msg role="alert" hidden></div>
+      <div class="actions"><button class="primary" type="submit" data-op="save-tokens" data-read data-ask="setup" data-ask-always data-ask-why="SimRack keeps tokens in its state folder, readable by its own user only, and sends each only to the address beside it." data-busy-label="Saving…">Save connection</button><span class="note ok" data-setup-tokens-ok role="status"></span></div>
+    </form>`;
+}
+function saveTokens(f, btn) {
+  const page = setupPage; if (!page) return;
+  const box = $("[data-setup-tokens-msg]", f), v = n => f.elements[n].value.trim();
+  /* an address goes only when it changed; blank keeps the saved one */
+  const body = {
+    proxmox: v("proxmox_token"), mist: v("mist_token"),
+    proxmox_api: bare(v("proxmox_api")) === bare(page.tokens.proxmox.api) ? "" : v("proxmox_api"),
+    mist_api: bare(v("mist_api")) === bare(page.tokens.mist.api) ? "" : v("mist_api"),
+  };
+  showErr(box, ""); $("[data-setup-tokens-ok]", f).textContent = "";
+  for (const [k, label] of [["proxmox", "Proxmox"], ["mist", "Mist"]]) {
+    if (body[k + "_api"] && !body[k]) {
+      showErr(box, `Paste the ${label} token along with its new address.`, "SimRack never sends a saved token to a new address unless it is pasted again.");
+      f.elements[k + "_token"].focus(); return;
+    }
+  }
+  if (!body.proxmox && !body.mist) { showErr(box, "Paste a token to save."); f.elements.proxmox_token.focus(); return; }
+  const label = body.proxmox && body.mist ? "Save the Proxmox and Mist tokens" : body.proxmox ? "Save the Proxmox token" : "Save the Mist token";
+  run(btn, label, async () => {
+    try { return await api("/api/setup/tokens", body); } catch (e) { showErr(box, e.message, e.detail); throw e; }
+  }, async () => {
+    for (const n of ["proxmox_token", "mist_token"]) f.elements[n].value = "";
+    if (body.proxmox) { const d = $('details[data-key="pve-token"]', f); if (d) d.open = false; }
+    await loadSetup();
+    const ok = $("[data-setup-tokens-ok]"); if (ok) ok.textContent = "Saved. SimRack uses it from now on.";
+  });
+}
+function labHtml(page) {
+  const p = page.profile || {}, found = page.found || {}, tok = page.tokens;
+  const sec = k => (p[k] && typeof p[k] === "object" && !Array.isArray(p[k]) ? p[k] : {});
+  const val = v => (v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
+  const px = sec("proxmox"), mi = sec("mist"), mg = sec("management"), pr = sec("protected"), sb = sec("sandbox"), as = sec("assistants");
+  const field = (name, label, v, more) => `<label class="f"><span>${label}</span><input name="${name}" class="mono" spellcheck="false" value="${esc(val(v))}"${more || ""}></label>`;
+  const range = (key, label, v) => {
+    const [a, b] = Array.isArray(v) ? v : [v];
+    return `<div class="f" role="group" aria-labelledby="lbl-${key}"><span id="lbl-${key}">${label}</span><div class="range">
+      <input name="sandbox.${key}" class="mono" inputmode="numeric" aria-label="First" placeholder="default" value="${esc(val(a))}"><span class="faint">to</span>
+      <input name="sandbox.${key}.last" class="mono" inputmode="numeric" aria-label="Last" placeholder="default" value="${esc(val(b))}"></div></div>`;
+  };
+  /* "not found now" only when the source answered; "new" only against a profile the user saved */
+  const answered = {
+    proxmox: tok.proxmox.set && ["vmids", "lxc", "bridges", "subnets"].some(k => (found[k] || []).length),
+    mist: tok.mist.set && (found.mist_sites || []).length > 0,
+  };
+  const protect = key => {
+    const listed = Array.isArray(pr[key]), saved = listed ? pr[key].map(String) : [], src = key === "mist_sites" ? "mist" : "proxmox";
+    const items = (found[key] || []).map(x => ({ id: String(x.id), label: x.label || "", found: true }));
+    for (const id of saved) if (!items.some(x => x.id === id)) items.push({ id, label: "", found: false });
+    const tick = x => {
+      const on = saved.includes(x.id);
+      const chip = !x.found && answered[src] ? ` <span class="chip warn plain">not found now</span>`
+        : x.found && page.done && !on ? ` <span class="chip accent plain">new</span>` : "";
+      const text = src === "mist" ? `${esc(x.label || x.id)}${chip}${x.label ? `<span class="id">${esc(x.id)}</span>` : ""}`
+        : `<span class="mono">${esc(x.id)}</span> <span class="faint">${esc(x.label)}</span>${chip}`;
+      return `<label class="tick"><input type="checkbox" name="tick:${key}:${esc(x.id)}" data-protect="${key}" value="${esc(x.id)}"${on ? " checked" : ""}><span>${text}</span></label>`;
+    };
+    return `<fieldset class="protect"><legend>${PROTECT[key]}</legend>
+      ${items.length ? `<div class="ticks">${items.map(tick).join("")}</div>`
+        : `<p class="note">${tok[src].set ? "None found." : `SimRack lists these once it has a ${src === "mist" ? "Mist" : "Proxmox"} token.`}</p>`}
+      <label class="f"><span>Also protect <span class="faint">· separate with commas</span></span><input name="also:${key}" class="mono" spellcheck="false" value="${esc(listed ? "" : val(pr[key]))}"></label>
+    </fieldset>`;
+  };
+  return `<h2 class="sec" id="sec-lab">The lab</h2>
+    <form class="fields" data-form="setup" autocomplete="off" novalidate>
+      <fieldset class="group"><legend>Where SimRack builds</legend>
+        <div class="fields two">
+          ${field("proxmox.node", "Proxmox node", px.node)}
+          ${field("mist.org_id", `Mist org ID <span class="faint">· optional</span>`, mi.org_id)}
+        </div>
+      </fieldset>
+      <fieldset class="group"><legend>Management <span class="faint">· where each switch's fxp0 connects</span></legend>
+        <div class="fields two">
+          ${field("management.bridge", "Bridge", mg.bridge, ` list="setup-bridges"`)}
+          ${field("management.vlan", `VLAN <span class="faint">· blank for untagged</span>`, mg.vlan, ` inputmode="numeric"`)}
+          ${field("management.cidr", "Subnet", mg.cidr, ` placeholder="192.0.2.0/24"`)}
+          ${field("management.pool", "Addresses the switches get", mg.pool, ` placeholder="192.0.2.200-192.0.2.249"`)}
+        </div>
+        <datalist id="setup-bridges">${(found.bridges || []).map(b => `<option value="${esc(b.id)}">${esc(b.label)}</option>`).join("")}</datalist>
+      </fieldset>
+      <fieldset class="group"><legend>Live <span class="faint">· SimRack never touches what is ticked</span></legend>
+        ${Object.keys(PROTECT).map(protect).join("")}
+      </fieldset>
+      <fieldset class="group"><legend>Sandboxes</legend>
+        <div class="fields two">${range("vmids", "VM IDs", sb.vmids)}${range("lxc", "Container IDs", sb.lxc)}</div>
+        <details data-key="sbx-adv"><summary>Advanced</summary>
+          <div class="fields two">
+            ${field("sandbox.bridge_prefix", "Bridge name prefix", sb.bridge_prefix, ` placeholder="sbx"`)}
+            ${field("sandbox.park_bridge", "Parking bridge", sb.park_bridge, ` placeholder="sbxpark"`)}
+          </div>
+        </details>
+      </fieldset>
+      <fieldset class="group"><legend>Assistants <span class="faint">· through SimRack's MCP server</span></legend>
+        <p class="note">An assistant connected to SimRack can look, build sandboxes and change them. These undo work, so they stay off unless you tick them.</p>
+        <label class="check"><input type="checkbox" name="assistants.risky"${as.risky === true ? " checked" : ""}> Also let it tear down sandboxes, revert, delete switches and type at a switch's console</label>
+      </fieldset>
+      <div class="form-err" data-setup-msg role="alert" hidden></div>
+      <div class="actions">
+        <button class="primary" type="submit" data-op="save-lab" data-read data-ask="setup" data-ask-always data-ask-why="SimRack never touches anything ticked, and builds only in the sandbox ranges." data-busy-label="Saving…">Save lab profile</button>
+        <button class="ghost" type="button" data-act="setup-export" data-read${page.done ? "" : ` data-why="Nothing is saved yet"`}>Export</button>
+        <button class="ghost" type="button" data-act="setup-import" data-read data-ask="setup" data-ask-always data-ask-why="The file replaces the saved lab profile.">Import…</button>
+        <span class="note ok" data-setup-ok role="status"></span>
+      </div>
+      <input type="file" accept=".toml,text/plain" data-setup-file hidden>
+    </form>`;
+}
+/* the form as a profile: a blank is left out, so the server names what is required or takes its default */
+function setupBody(f) {
+  const t = n => (f.elements[n] ? f.elements[n].value.trim() : "");
+  const opt = n => t(n) || null;
+  const num = s => (/^\d+$/.test(s) ? Number(s) : s);
+  const range = k => { const a = t(`sandbox.${k}`), b = t(`sandbox.${k}.last`); return a || b ? [num(a), num(b)] : null; };
+  const live = {};
+  for (const key of Object.keys(PROTECT)) {
+    const ids = $$(`input[data-protect="${key}"]:checked`, f).map(x => x.value).concat(t(`also:${key}`).split(/[\s,]+/).filter(Boolean));
+    live[key] = [...new Set(ids)].map(key === "vmids" || key === "lxc" ? num : String);
+  }
+  return {
+    proxmox: { node: opt("proxmox.node") },
+    mist: { org_id: opt("mist.org_id") },
+    management: { bridge: opt("management.bridge"), vlan: t("management.vlan") ? num(t("management.vlan")) : null, cidr: opt("management.cidr"), pool: opt("management.pool") },
+    protected: live,
+    sandbox: { vmids: range("vmids"), lxc: range("lxc"), bridge_prefix: opt("sandbox.bridge_prefix"), park_bridge: opt("sandbox.park_bridge") },
+    assistants: { risky: !!(f.elements["assistants.risky"] && f.elements["assistants.risky"].checked) },
+  };
+}
+/* the server names the setting it refused, such as management.pool: mark that field and go to it */
+function markSetupErr(f, msg) {
+  const m = /\b(proxmox|mist|management|protected|sandbox|assistants)\.(\w+)/.exec(msg || ""); if (!m) return;
+  const x = f.elements.namedItem(m[1] === "protected" ? `also:${m[2]}` : `${m[1]}.${m[2]}`);
+  if (!x || !x.tagName) return;
+  const d = x.closest("details"); if (d) d.open = true;
+  x.setAttribute("aria-invalid", "true");
+  x.focus();
+}
+function saveProfile(f, btn) {
+  const box = $("[data-setup-msg]", f), body = { profile: setupBody(f) };
+  showErr(box, ""); $("[data-setup-ok]", f).textContent = "";
+  for (const x of $$("[aria-invalid]", f)) x.removeAttribute("aria-invalid");
+  let got = null;
+  run(btn, "Save the lab profile", async () => {
+    try { got = await api("/api/setup", body); return got.profile; }
+    catch (e) { showErr(box, e.message, e.detail); markSetupErr(f, e.message); throw e; }
+  }, () => setupSaved(got, "Saved. SimRack uses this profile from now on."));
+}
+function setupSaved(page, said) {
+  if (!page) return;
+  setupPage = page; updateSetup(true);
+  const ok = $("[data-setup-ok]"); if (ok) ok.textContent = said;
+  $('[data-op="save-lab"]')?.focus({ preventScroll: true });
+}
+async function importProfile(input) {
+  const file = input.files[0], f = input.form; if (!file || !f) return;
+  const btn = $('[data-act="setup-import"]', f), box = $("[data-setup-msg]", f);
+  showErr(box, ""); $("[data-setup-ok]", f).textContent = "";
+  let text;
+  try { text = await file.text(); } catch (e) { showErr(box, `Couldn't read ${file.name}: ${e.message}`); return; } finally { input.value = ""; }
+  let got = null;
+  run(btn, `Import ${file.name}`, async () => {
+    try { got = await api("/api/setup", { toml: text }); return got.profile; } catch (e) { showErr(box, e.message, e.detail); throw e; }
+  }, () => setupSaved(got, `Imported ${file.name}. SimRack uses it from now on.`));
+}
+async function exportProfile(btn) {
+  const f = btn.form, box = f && $("[data-setup-msg]", f), ok = f && $("[data-setup-ok]", f);
+  showErr(box, ""); if (ok) ok.textContent = "";
+  try {
+    const { toml } = await api("/api/setup/export");
+    const url = URL.createObjectURL(new Blob([toml], { type: "application/toml" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: "lab-profile.toml" });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    if (ok) ok.textContent = "Exported lab-profile.toml.";
+    note("ok", "Exported the lab profile");
+  } catch (e) { showErr(box, "Couldn't export the lab profile: " + e.message, e.detail); note("err", "Couldn't export the lab profile: " + e.message); }
 }
 
 /* ---------- import: read a fabric's design from Mist ---------- */
@@ -364,10 +673,13 @@ function readJson(text, label) {
     return parts.map((p, i) => { try { return JSON.parse(p); } catch (e) { throw new Error(`${label}, part ${i + 1}, is not JSON: ${e.message}`); } });
   }
 }
+function errHtml(text, detail) {
+  return `<p>${esc(text)}</p>${detail ? `<p>${esc(typeof detail === "string" ? detail : JSON.stringify(detail))}</p>` : ""}`;
+}
 function showErr(box, text, detail) {
   if (!box) return;
   box.hidden = !text;
-  box.innerHTML = text ? `<p>${esc(text)}</p>${detail ? `<p>${esc(typeof detail === "string" ? detail : JSON.stringify(detail))}</p>` : ""}` : "";
+  box.innerHTML = text ? errHtml(text, detail) : "";
 }
 async function importShape(f, btn) {
   const box = $("[data-import-msg]", f), docs = [], problems = [];
@@ -474,7 +786,7 @@ function shapeShell(sh) {
           <label class="check"><input type="checkbox" name="mist" disabled> Create a Mist site for it</label>
           <p class="note" data-mist-why hidden></p>
           <div class="form-err" data-build-msg role="alert" hidden></div>
-          <div class="actions"><button class="primary" type="submit" data-write data-build data-busy-label="Building…">Build</button></div>
+          <div class="actions"><button class="primary" type="submit" data-write data-ask="build" data-build data-busy-label="Building…">Build</button></div>
         </form>
       </section>
       <section aria-labelledby="sec-src"><h2 class="sec" id="sec-src">From Mist</h2><div id="srcfacts"></div></section>
@@ -482,7 +794,7 @@ function shapeShell(sh) {
       <div class="forget">
         <p class="note">Deleting forgets SimRack's copy of this plan. Mist is not touched, and you can import it again.</p>
         <div class="form-err" id="shapemsg" role="alert" hidden></div>
-        <button class="danger" data-act="del-shape" data-name="${esc(sh.name)}" data-confirm="Delete this shape?" data-busy-label="Deleting…">Delete shape</button>
+        <button class="danger" data-act="del-shape" data-name="${esc(sh.name)}" data-ask="delete" data-ask-always data-ask-why="Only SimRack's saved copy goes. Nothing in the lab or in Mist changes." data-busy-label="Deleting…">Delete shape</button>
       </div>
     </aside>
   </div>`;
@@ -539,8 +851,8 @@ function updateShape(sh) {
   fillSelect(f.boot, bootOptions()); updateBootNote(f);
   if (f.mist.disabled === can) { f.mist.disabled = !can; f.mist.checked = can; }
   const mw = $("[data-mist-why]", f);
-  mw.textContent = can || !writesOn() ? "" : !S.mist.configured ? "No Mist token (MIST_TOKEN), so the sandbox starts without a site."
-    : "Mist writes are off (SIMRACK_MIST_WRITES), so the sandbox starts without a site.";
+  mw.textContent = can || !writesOn() ? "" : !S.mist.configured ? "No Mist token yet, so the sandbox starts without a site."
+    : `${S.mist.read_only_reason || "Mist changes are off."} The sandbox starts without a site.`;
   mw.hidden = !mw.textContent;
   const b = $("[data-build]", f);
   b.dataset.why = !k ? "Tick at least one switch" : short ? `Not enough memory: ${gb(short)} short` : "";
@@ -589,7 +901,7 @@ function shell(s) {
             <option value="switch:core">Core switch</option><option value="switch:border">Border switch</option>
             <option value="vsrx:vsrx">vSRX</option><option value="image:client">Test host</option></select></label>
           <label class="f">Boot from<select name="boot" class="mono" data-boot></select></label>
-          <button type="submit" data-write data-busy-label="Adding…">Add guest</button>
+          <button type="submit" data-write data-ask="build" data-busy-label="Adding…">Add guest</button>
         </form>
       </div>
     </section>
@@ -604,7 +916,7 @@ function shell(s) {
             <label class="f">Port<select name="a_port" class="mono" data-port-for="a_node"></select></label></div>
           <div class="fields pair"><label class="f">To<select name="b_node" data-node-sel data-port-target="b_port"></select></label>
             <label class="f">Port<select name="b_port" class="mono" data-port-for="b_node"></select></label></div>
-          <div class="actions"><button type="submit" data-write data-busy-label="Plugging in…">Plug in</button></div>
+          <div class="actions"><button type="submit" data-write data-ask="cable" data-busy-label="Plugging in…">Plug in</button></div>
         </form>
         <p class="note" style="margin-top:.75rem">Each cable is its own MTU 9216 bridge on the Proxmox host. LLDP and LACP pass through.</p>
       </div>
@@ -622,11 +934,11 @@ function shell(s) {
       <p class="subhead">Proxmox, guest disks</p>
       <form class="fields inline" data-form="pve-snap" autocomplete="off">
         <label class="f">Label<input name="label" class="mono" required pattern="[A-Za-z][A-Za-z0-9_\\-]{0,39}"></label>
-        <button type="submit" data-write data-busy-label="Saving…">Save point</button>
+        <button type="submit" data-write data-ask="snapshot" data-busy-label="Saving…">Save point</button>
       </form>
       <form class="fields inline" data-form="pve-revert" style="margin-top:.5rem">
         <label class="f">Saved points<select name="label" class="mono" data-pve-snaps></select></label>
-        <button type="submit" data-write data-confirm="Revert every guest?">Revert guests</button>
+        <button type="submit" data-write data-ask="revert" data-ask-always data-ask-why="Every guest goes back to the saved point. What changed since is lost.">Revert guests</button>
       </form>
       <p class="subhead" style="margin-top:1.75rem">Mist, site and device configs</p>
       <form class="fields inline" data-form="mist-snap" autocomplete="off">
@@ -635,7 +947,7 @@ function shell(s) {
       </form>
       <form class="fields inline" data-form="mist-revert" style="margin-top:.5rem">
         <label class="f">Saved points<select name="label" class="mono" data-mist-snaps></select></label>
-        <button type="submit" data-write data-mist-write data-confirm="Revert the Mist site?">Revert Mist</button>
+        <button type="submit" data-write data-mist-write data-ask="revert" data-ask-always data-ask-why="The Mist site goes back to the saved point. What changed in Mist since is lost.">Revert Mist</button>
       </form>
     </section>
 
@@ -654,9 +966,8 @@ function shell(s) {
     <h2 class="sec bad" id="sec-tear">Tear down</h2>
     <p class="note" style="margin-bottom:1rem">Stops and deletes every guest, then removes its bridges. If anything cannot be deleted, the sandbox stays listed so you can retry.</p>
     <form class="fields line" data-form="teardown" autocomplete="off">
-      <label class="f">Type the sandbox name to confirm<input name="confirm" class="mono" placeholder="${esc(s.name)}"></label>
       <label class="check"><input type="checkbox" name="keep_mist"> Keep its Mist site</label>
-      <button type="submit" class="danger solid" data-write data-teardown disabled data-busy-label="Tearing down…">Delete sandbox</button>
+      <button type="submit" class="danger solid" data-write data-ask="teardown" data-ask-always data-busy-label="Tearing down…">Delete sandbox</button>
     </form>
   </section>`;
 }
@@ -684,14 +995,14 @@ function updateSandbox(s) {
       <td class="mono num vmid">${n.vmid}</td><td class="mono">${esc(n.mgmt_ip || "–")}${planned(n)}</td>
       <td><span class="chip ${n.running ? "ok" : ""}">${n.running ? "running" : "stopped"}</span>${n.adopted_at ? ` <span class="chip mist" title="Adopted ${esc(when(n.adopted_at))}">in Mist</span>` : ""}</td>
       <td class="right">${n.running
-        ? `<button class="sm" data-act="power" data-node="${esc(n.name)}" data-action="shutdown" data-write data-busy-label="Stopping">Shut down</button>`
-        : `<button class="sm" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-busy-label="Starting">Start</button>`}</td></tr>`; }).join("")}</tbody></table></div>`
+        ? `<button class="sm" data-act="power" data-node="${esc(n.name)}" data-action="shutdown" data-write data-ask="power" data-busy-label="Stopping">Shut down</button>`
+        : `<button class="sm" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-ask="power" data-busy-label="Starting">Start</button>`}</td></tr>`; }).join("")}</tbody></table></div>`
     : `<p class="hint">No guests. Add one below.</p>`);
   swap($("#cables"), s.links.length ? `<ul class="patch scroll-y">${s.links.map(l => { const on = isSel("cable", l.bridge), ok = linkUp(s, l); return `<li class="${on ? "sel" : ""}" data-act="focus-cable" data-id="${esc(l.bridge)}">
       <i class="wire${ok ? "" : " down"}" aria-hidden="true"></i>
       <button class="link" data-act="focus-cable" data-id="${esc(l.bridge)}" aria-expanded="${on}" aria-controls="inspector"><span class="end">${esc(l.a_node)} <span class="mono muted">${esc(l.a_port)}</span></span> <span class="end">↔ ${esc(l.b_node)} <span class="mono muted">${esc(l.b_port)}</span></span></button>
       <span class="br">${esc(l.bridge)} · ${ok ? "up" : "an end is down"}</span>
-      <button class="sm danger" data-act="unplug" data-bridge="${esc(l.bridge)}" data-confirm="Unplug?" data-write>Unplug</button></li>`; }).join("")}</ul>`
+      <button class="sm danger" data-act="unplug" data-bridge="${esc(l.bridge)}" data-write data-ask="cable">Unplug</button></li>`; }).join("")}</ul>`
     : `<p class="hint">No cables. Plug one in below, or select a switch in the diagram.</p>`);
   const sws = s.nodes.filter(n => n.kind === "switch");
   $("#joinsec").hidden = !sws.length;
@@ -711,25 +1022,17 @@ function updateSandbox(s) {
   for (const f of $$('[data-form="pve-snap"] input, [data-form="mist-snap"] input')) if (!f.value && document.activeElement !== f) f.value = stamp;
 
   $("#mistsite").innerHTML = s.mist_site_id ? `<span class="chip mist">linked</span>` : "";
-  swap($("#mist"), !S.mist.configured ? `<p class="hint">No Mist token (MIST_TOKEN), so Mist actions are off.</p>`
+  swap($("#mist"), !S.mist.configured ? `<p class="hint">No Mist token yet, so Mist actions are off.</p>`
     : s.mist_site_id ? `<p class="hint" style="margin-bottom:.75rem">Site <span class="mono">${esc(s.mist_site_id)}</span></p>
       <div class="actions">
-        <button data-act="mist" data-op="fabric" data-write data-mist-write data-busy-label="Building…">Build fabric</button>
+        <button data-act="mist" data-op="fabric" data-write data-mist-write data-ask="mist" data-busy-label="Building…">Build fabric</button>
         <button data-act="mist-get" data-op="health" data-mist-read data-busy-label="Checking…">Check health</button>
         <button data-act="mist-get" data-op="adopt" data-mist-read>Adoption command</button></div>
       <p class="note" style="margin-top:.75rem">Build fabric makes the site match the cables, after saving a revert point. Join Mist above walks through it. Results land in Activity.</p>`
     : sws.length ? `<p class="hint">No Mist site yet. Create it in Join Mist above.</p>`
     : `<p class="hint" style="margin-bottom:.75rem">This sandbox has no Mist site. Creating one makes an empty site named after it in your Mist org.</p>
-      <button data-act="mist" data-op="site" data-write data-mist-write data-busy-label="Creating…">Create Mist site</button>`);
+      <button data-act="mist" data-op="site" data-write data-mist-write data-ask="mist" data-busy-label="Creating…">Create Mist site</button>`);
   renderLog();
-  for (const b of $$("[data-teardown]")) b.dataset.need = s.name;
-  syncTeardown();
-}
-
-function syncTeardown() {
-  const f = $('[data-form="teardown"]'); if (!f) return;
-  const b = $("[data-teardown]", f);
-  if (b.getAttribute("aria-busy") !== "true") b.disabled = busy || !writesOn() || f.confirm.value.trim() !== b.dataset.need;
 }
 
 /* ---------- Join Mist ---------- */
@@ -739,7 +1042,7 @@ const planned = n => n.kind === "switch" && n.mgmt_ip && !n.adopted_at
 function adoptBtn(s, n, sm) {
   const why = !s.mist_site_id ? "Create the sandbox's Mist site first" : !n.running ? "Start the switch first" : "";
   const cls = sm ? "sm" : !why && !n.adopted_at ? "primary" : "";
-  return `<button${cls ? ` class="${cls}"` : ""}${sm ? ` aria-label="Adopt ${esc(n.name)}${n.adopted_at ? " again" : ""}"` : ""} data-act="adopt" data-node="${esc(n.name)}" data-write data-mist-write data-busy-label="Adopting…" data-why="${esc(why)}"
+  return `<button${cls ? ` class="${cls}"` : ""}${sm ? ` aria-label="Adopt ${esc(n.name)}${n.adopted_at ? " again" : ""}"` : ""} data-act="adopt" data-node="${esc(n.name)}" data-write data-mist-write data-ask="mist" data-busy-label="Adopting…" data-why="${esc(why)}"
     data-tip="Joins ${esc(n.name)} to the sandbox's Mist site over its serial console. Takes about a minute.">${n.adopted_at ? sm ? "Again" : "Adopt again" : sm ? "Adopt" : "Adopt into Mist"}</button>`;
 }
 /* what the build sends, in the words of Mist's Campus Fabric wizard; the defaults are fabric.py's */
@@ -769,7 +1072,7 @@ function joinSteps(s, sws) {
   let h = `${li(site, !site)}<h3>Mist site</h3>${site
     ? `<p class="hint">${esc(siteName(s))} <span class="mono faint">${esc(s.mist_site_id)}</span></p>`
     : `<p class="hint">Adoption joins switches to a site, so the sandbox needs its own: an empty site named ${esc(siteName(s))} in your Mist org.</p>
-      <div class="actions"><button class="primary" data-act="mist" data-op="site" data-write data-mist-write data-busy-label="Creating…">Create Mist site</button></div>`}</li>`;
+      <div class="actions"><button class="primary" data-act="mist" data-op="site" data-write data-mist-write data-ask="mist" data-busy-label="Creating…">Create Mist site</button></div>`}</li>`;
   h += `${li(all, site && !all)}<h3>Adopt the switches</h3>
     <p class="hint">Adopt logs in over the serial console, sets the root password and enters the site's adoption commands. The switch then calls Mist over fxp0. About a minute each.</p>
     <div class="scroll-y"><table><thead><tr><th>Switch</th><th class="state">State</th><th>Mist</th><th></th></tr></thead><tbody>${sws.map(n => `<tr>
@@ -789,7 +1092,7 @@ function joinSteps(s, sws) {
       <td class="nm"><b>${esc(x.n.name)}</b></td><td class="role muted">${esc(x.n.role)}</td><td class="pod muted">${esc(x.n.pod || "–")}</td>
       <td>${x.ports.length ? x.ports.map(p => `<span class="pl"><span class="mono">${esc(p.port)}</span> → ${esc(p.peer)} <span class="mono faint">${esc(p.peerPort)}</span></span>`).join("")
         : `<span class="faint">none</span>`}</td></tr>`).join("")}</tbody></table></div>
-    <div class="actions"><button${ready && !built ? ` class="primary"` : ""} data-act="mist" data-op="fabric" data-write data-mist-write data-busy-label="Building…"
+    <div class="actions"><button${ready && !built ? ` class="primary"` : ""} data-act="mist" data-op="fabric" data-write data-mist-write data-ask="mist" data-busy-label="Building…"
       data-why="${site ? "" : "Create the sandbox's Mist site first"}" data-tip="Writes to the Mist site. Every switch must already be in it.">${built ? "Build again" : "Build fabric in Mist"}</button>
       <button data-act="copy-fabric">Copy as text</button></div>
     ${built ? `<p class="note">Built ${esc(when(built))}.${undo ? ` Revert point: <code>${esc(undo)}</code>` : ""}</p>` : ""}</li>`;
@@ -797,7 +1100,7 @@ function joinSteps(s, sws) {
   h += `${li(healthy, !!built && !healthy)}<h3>Check the cabling</h3>
     <p class="hint">Checks each cable three ways: Proxmox (both ends on the cable's bridge, link up), LLDP (what each switch port hears, as Mist reports it) and the Mist topology. ${writesOn()
       ? "Ends on the wrong bridge are plugged back in and stray ports parked." : "Read-only, so it reports problems and fixes none."} It never adds NICs and never writes to Mist.</p>
-    <div class="actions"><button${built && !healthy ? ` class="primary"` : ""} data-act="check" data-read data-busy-label="Checking…">Check cabling</button></div>
+    <div class="actions"><button${built && !healthy ? ` class="primary"` : ""} data-act="check" data-read data-ask-why="Where Proxmox differs from the plan, SimRack puts the cabling back the way the plan says." data-busy-label="Checking…">Check cabling</button></div>
     ${fc ? checkReport(fc) : ""}</li>`;
   return h;
 }
@@ -822,7 +1125,7 @@ function checkReport(fc) {
   if (!fc.repair) facts.push("read-only");
   const more = [
     ...(fc.parked || []).map(p => p.fixed ? `Parked ${p.node} ${p.port}: it had no cable but sat on ${p.bridge}.`
-      : `${p.node} ${p.port} has no cable but sits on ${p.bridge}. Turn writes on and check again to park it.`),
+      : `${p.node} ${p.port} has no cable but sits on ${p.bridge}. Check again once SimRack may change the lab to park it.`),
     ...(fc.missing || []).map(m => `${m.node} ${m.port} has no NIC in Proxmox.`),
     ...(fc.extra || []).map(x => `Mist links ${x.a_node} and ${x.b_node}, but no cable joins them. Build again to drop the link.`),
     ...(fc.notes || []),
@@ -1085,12 +1388,12 @@ function inspector(s) {
     return `<div class="strip-head">
       <h2 tabindex="-1">${esc(n.name)} <span class="chip ${n.running ? "ok" : ""}">${n.running ? "running" : "stopped"}</span></h2>
       <div class="actions">
-        ${n.running ? `<button data-act="power" data-node="${esc(n.name)}" data-action="shutdown" data-write data-busy-label="Shutting down…">Shut down</button>
-          <button data-act="power" data-node="${esc(n.name)}" data-action="stop" data-write data-confirm="Pull the plug?">Power off</button>`
-          : `<button class="primary" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-busy-label="Starting…">Start</button>`}
+        ${n.running ? `<button data-act="power" data-node="${esc(n.name)}" data-action="shutdown" data-write data-ask="power" data-busy-label="Shutting down…">Shut down</button>
+          <button data-act="power" data-node="${esc(n.name)}" data-action="stop" data-write data-ask="power" data-ask-always data-ask-why="Like pulling the plug: the guest gets no chance to shut down." data-busy-label="Powering off…">Power off</button>`
+          : `<button class="primary" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-ask="power" data-busy-label="Starting…">Start</button>`}
         ${n.kind === "switch" ? adoptBtn(s, n) : ""}
         <button data-act="cable-from" data-node="${esc(n.name)}" data-write>Cable from here</button>
-        <button class="danger" data-act="del-node" data-node="${esc(n.name)}" data-write data-confirm="Delete ${esc(n.name)}?" data-busy-label="Deleting…">Delete</button>
+        <button class="danger" data-act="del-node" data-node="${esc(n.name)}" data-write data-ask="delete" data-ask-always data-ask-why="The guest and its disk are destroyed, and its cables come out." data-busy-label="Deleting…">Delete</button>
       </div>${CLOSE}
     </div>
     <div class="strip-body">
@@ -1106,7 +1409,7 @@ function inspector(s) {
       </dl>
       ${n.kind === "switch" ? `<div class="console"><form class="fields inline" data-form="console" data-node="${esc(n.name)}" autocomplete="off">
           <label class="f">Serial console<input name="command" class="mono" placeholder="show interfaces terse" maxlength="2000"></label>
-          <button type="submit" data-write data-busy-label="Sending…">Send</button></form>
+          <button type="submit" data-write data-ask="console" data-busy-label="Sending…">Send</button></form>
         ${consoleOut[n.name] ? `<pre>${esc(consoleOut[n.name])}</pre>` : `<p class="note" style="margin-top:.5rem">Sends one command to the serial console and shows the reply here.</p>`}</div>` : ""}
     </div>`;
   }
@@ -1115,7 +1418,7 @@ function inspector(s) {
   return `<div class="strip-head">
       <h2 tabindex="-1"><span><span class="end">${esc(l.a_node)} <span class="mono muted">${esc(l.a_port)}</span></span> <span class="end">↔ ${esc(l.b_node)} <span class="mono muted">${esc(l.b_port)}</span></span></span>
         <span class="chip ${ok ? "ok" : ""}">${ok ? "both ends up" : "an end is down"}</span></h2>
-      <div class="actions"><button class="danger" data-act="unplug" data-bridge="${esc(l.bridge)}" data-write data-confirm="Unplug?">Unplug</button></div>${CLOSE}
+      <div class="actions"><button class="danger" data-act="unplug" data-bridge="${esc(l.bridge)}" data-write data-ask="cable">Unplug</button></div>${CLOSE}
     </div>
     <div class="strip-body">
       <dl class="facts">
@@ -1127,7 +1430,7 @@ function inspector(s) {
         <label class="f">Move this end<select name="from_node" data-move-from><option value="${esc(l.a_node)}"${from === l.a_node ? " selected" : ""}>${esc(l.a_node)} ${esc(l.a_port)}</option><option value="${esc(l.b_node)}"${from === l.b_node ? " selected" : ""}>${esc(l.b_node)} ${esc(l.b_port)}</option></select></label>
         <label class="f">To guest<select name="to_node" data-port-target="to_port">${moveTargets(s, l, from)}</select></label>
         <label class="f">Port<select name="to_port" class="mono">${portOptions(s, "", null)}</select></label>
-        <button type="submit" data-write data-busy-label="Moving…">Move cable</button>
+        <button type="submit" data-write data-ask="cable" data-busy-label="Moving…">Move cable</button>
       </form>
     </div>`;
 }
@@ -1166,7 +1469,6 @@ document.addEventListener("click", e => {
   const el = e.target.closest("[data-act]"); if (!el) return;
   const act = el.dataset.act, s = sandbox();
   if (el.tagName === "BUTTON" && el.disabled) return;
-  if (el.dataset.confirm && el.tagName === "BUTTON" && !confirmed(el)) return;
   switch (act) {
     case "refresh": refresh(true); break;
     case "new": creating = true; setView(""); renderAll(); break;
@@ -1177,6 +1479,20 @@ document.addEventListener("click", e => {
       creating = false; setView("import"); renderAll();
       if (!el.isConnected) $(".intake h1")?.focus({ preventScroll: true });
       break;
+    case "setup":
+      if (view === "setup") { loadSetup(); break; }
+      prevView = view; creating = false; setupPage = null; setupErr = ""; setView("setup");
+      if (S) renderAll();
+      if (!el.isConnected) $(".intake h1")?.focus({ preventScroll: true });
+      break;
+    case "setup-retry": loadSetup(); renderMain(); break;
+    case "setup-close":
+      setView(prevView === "import" || (prevView.startsWith("shape:") && shapeOf(prevView.slice(6))) ? prevView : "");
+      renderAll(); $("#setupbtn").focus({ preventScroll: true });
+      break;
+    case "copy-cmds": copyText(((setupPage && setupPage.proxmox_token_commands) || []).join("\n"), el); break;
+    case "setup-export": exportProfile(el); break;
+    case "setup-import": $("[data-setup-file]")?.click(); break;
     case "cancel-import": setView(prevView.startsWith("shape:") && shapeOf(prevView.slice(6)) ? prevView : ""); renderAll(); break;
     case "pick-shape": creating = false; setView("shape:" + el.dataset.name); renderAll(); break;
     case "del-shape": {
@@ -1216,7 +1532,9 @@ document.addEventListener("click", e => {
     case "mist":
       run(el, el.dataset.op === "site" ? "Create Mist site" : "Build fabric in Mist",
         () => api(`/api/sandboxes/${encodeURIComponent(s.name)}/mist/${el.dataset.op}`, {})); break;
+    case "pause": togglePause(el); break;
     case "check":
+      el.dataset.ask = S.writes_enabled ? "repair" : "";
       run(el, "Check cabling", () => api(`/api/sandboxes/${encodeURIComponent(s.name)}/fabric/check`, {})); break;
     case "mist-get":
       run(el, el.dataset.op === "health" ? "Mist health" : "Adoption command",
@@ -1234,6 +1552,7 @@ document.addEventListener("keydown", e => {
 document.addEventListener("change", e => {
   const t = e.target;
   if (t.matches("[data-recipes]")) updateRecipeNote(t.form);
+  if (t.matches("[data-setup-file]") && t.files.length) importProfile(t);
   if (t.matches('[data-form="create"] [data-boot], [data-form="build"] [data-boot]')) updateBootNote(t.form);
   if (t.matches("[data-tick]") && view.startsWith("shape:") && shapeOf(view.slice(6))) {
     const sh = shapeOf(view.slice(6)), set = new Set(picksFor(sh));
@@ -1263,7 +1582,15 @@ document.addEventListener("change", e => {
     const firstFree = $$("option", port).find(o => !o.disabled); if (firstFree && port.selectedOptions[0]?.disabled) port.value = firstFree.value;
   }
 });
-document.addEventListener("input", e => { if (e.target.closest('[data-form="teardown"]')) syncTeardown(); });
+/* setup: a lab field the user changed keeps its value when the page is read again, and any change clears "Saved" */
+const setupEdit = e => {
+  const t = e.target, region = t.closest && t.closest("#setup-lab, #setup-connect");
+  if (!region || !t.name || t.type === "file") return;
+  if (region.id === "setup-lab") { t.setAttribute("data-touched", ""); t.removeAttribute("aria-invalid"); }
+  const ok = $("[data-setup-ok], [data-setup-tokens-ok]", region); if (ok) ok.textContent = "";
+};
+document.addEventListener("input", setupEdit);
+document.addEventListener("change", setupEdit);
 /* saved Mist JSON can be dropped on the import panel; elsewhere on that page a drop must not open the file */
 const fileDrag = e => view === "import" && !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
 const dropOver = z => $$("[data-drop]").forEach(d => d.classList.toggle("over", d === z));
@@ -1286,11 +1613,12 @@ document.addEventListener("submit", e => {
   e.preventDefault();
   const btn = $('button[type="submit"]', f), s = sandbox(), base = s ? `/api/sandboxes/${encodeURIComponent(s.name)}` : "";
   if (btn && btn.disabled) return;
-  if (btn && btn.dataset.confirm && !confirmed(btn)) return;
   const v = name => (f.elements[name] ? f.elements[name].value.trim() : "");
   switch (kind) {
     case "token": token = v("token"); localStorage.setItem("simrack_token", token); authNeeded = false; refresh(true); break;
     case "import": importShape(f, btn); break;
+    case "setup-tokens": saveTokens(f, btn); break;
+    case "setup": saveProfile(f, btn); break;
     case "create": {
       const body = { name: v("name"), recipe: v("recipe"), start: f.start.checked, with_mist_site: f.mist.checked, ...bootBody(v("boot")) };
       run(btn, `Build ${body.name}`, () => api("/api/sandboxes", body), r => { creating = false; sel = r.name; localStorage.setItem("lf_sel", sel); f.reset(); });
@@ -1336,9 +1664,10 @@ document.addEventListener("submit", e => {
       if (!v("label")) { note("err", "No Mist revert point saved yet."); return; }
       run(btn, `Revert Mist to ${v("label")}`, () => api(`${base}/mist/revert`, { label: v("label") })); break;
     case "teardown": {
-      if (v("confirm") !== s.name) return;
-      const name = s.name;
-      run(btn, `Tear down ${name}`, () => api(`${base}/teardown`, { confirm: true, keep_mist: f.keep_mist.checked }), r => {
+      const name = s.name, keep = f.keep_mist.checked, plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+      btn.dataset.askWhy = `${plural(s.nodes.length, "guest")} and ${plural(s.links.length, "cable")} are destroyed`
+        + (s.mist_site_id ? keep ? "; the Mist site stays." : ", and so is its Mist site." : ".") + " This can't be undone.";
+      run(btn, `Tear down ${name}`, () => api(`${base}/teardown`, { keep_mist: keep }), r => {
         if (r && r.complete === false) note("err", `${name} was only partly removed. It is still listed; fix the cause and tear down again.`, r);
         else { sel = ""; localStorage.removeItem("lf_sel"); }
       });
@@ -1349,12 +1678,16 @@ document.addEventListener("submit", e => {
 /* ---------- refresh ---------- */
 function renderAll() { renderTop(); renderBanner(); renderRail(); renderMain(); }
 async function refresh(force) {
-  if (!force && (busy || document.hidden || (armedAt && Date.now() - armedAt < 4500))) return;
+  if (!force && (busy || document.hidden || $("#ask").open)) return;
   try { S = await api("/api/state"); authNeeded = false; }
   catch (e) { $("#conn").className = "conn off"; if (!authNeeded) renderBanner(e.message); return; }
   if (sel && !S.sandboxes.some(s => s.name === sel)) { sel = ""; localStorage.removeItem("lf_sel"); }
   if (!sel && S.sandboxes.length && !creating) sel = S.sandboxes[0].name;
   if (view.startsWith("shape:") && !shapeOf(view.slice(6))) setView("");
+  if (S.profile && !S.profile.loaded && !autoSetup) {
+    autoSetup = true;
+    if (view !== "setup") { prevView = view; creating = false; setView("setup"); }
+  }
   renderAll();
 }
 applyRail();

@@ -6,12 +6,13 @@ protected bridge that even carries the sandbox prefix, two live Mist sites.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import textwrap
 import unittest
 
-from simrack.config import Settings
+from simrack.config import PROFILE_FILE, TOKENS_FILE, Settings
 from simrack.errors import GuardrailViolation
 from simrack.guardrails import Guardrails
 from simrack.service import SandboxManager
@@ -41,11 +42,13 @@ vmids = [100, 299]
 """
 
 
-def profile_settings(tmp: str, text: str = LAB, **environ) -> Settings:
-    path = os.path.join(tmp, "lab-profile.toml")
-    with open(path, "w", encoding="utf-8") as handle:
+def profile_settings(tmp: str, text: str = LAB, *, tokens: bool = False) -> Settings:
+    with open(os.path.join(tmp, PROFILE_FILE), "w", encoding="utf-8") as handle:
         handle.write(textwrap.dedent(text))
-    return Settings.from_env({"SIMRACK_PROFILE": path, "SIMRACK_STATE_DIR": tmp, **environ})
+    if tokens:
+        with open(os.path.join(tmp, TOKENS_FILE), "w", encoding="utf-8") as handle:
+            json.dump({"proxmox": "p", "mist": "t"}, handle)
+    return Settings.load({"SIMRACK_STATE_DIR": tmp})
 
 
 class TestGuardsFollowTheProfile(unittest.TestCase):
@@ -92,9 +95,6 @@ pool = "192.0.2.200-192.0.2.249"
 subnets = ["{subnet}"]
 """
 
-WRITES = {"SIMRACK_ALLOW_WRITES": "1", "SIMRACK_MIST_WRITES": "1", "MIST_TOKEN": "t", "SIMRACK_PVE_TOKEN": "p"}
-
-
 class TestSandboxSubnetsStayOffTheProfile(unittest.TestCase):
     """The ip-clos recipe uses 10.255.224.0/20 underlay, 172.31.0.0/23 router IDs,
     172.31.2.0/24 loopbacks and 10.60.10.0/24 data: each one is tried against a profile."""
@@ -108,7 +108,7 @@ class TestSandboxSubnetsStayOffTheProfile(unittest.TestCase):
 
     def ready_to_build(self, protected: str):
         lab = tempfile.mkdtemp(dir=self.tmp)
-        settings = profile_settings(lab, BUILD_LAB.format(subnet=protected), **WRITES)
+        settings = profile_settings(lab, BUILD_LAB.format(subnet=protected), tokens=True)
         manager = SandboxManager(settings, proxmox=FakeProxmox(templates=[320]), mist=FakeMist())
         sandbox = manager.create_sandbox("demo", "ip-clos", template_vmid=320)
         manager.mist_create_site(sandbox)

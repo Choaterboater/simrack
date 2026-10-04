@@ -29,7 +29,7 @@ from simrack.errors import BackendError, GuardrailViolation, LabError, NotConfig
 from simrack.mist import MistClient
 from simrack.service import _bridge_name
 from simrack.shapes import plan_build, shape_from_mist
-from tests.fakes import FakeConsole, FakeMist, FakeProxmox, TempDir, make_manager, read_state
+from tests.fakes import FakeConsole, FakeMist, FakeProxmox, TempDir, make_manager, mist_may_only_read, proxmox_may_only_look, read_state
 from tests.test_case9_shapes import LIVE_CABLES, bundle
 
 PASSWORD_SHAPE = r"^[A-HJ-NP-Za-km-z2-9]{4}(?:-[A-HJ-NP-Za-km-z2-9]{4}){3}$"
@@ -155,18 +155,18 @@ class TestSwitchPorts(Base):
         )
         self.assertEqual((a.mist_site_name, b.mist_site_name), ("Sandbox cust-a", "Sandbox cust-b"))
         self.assertEqual((a.recipe.site_name, b.recipe.site_name), ("Sandbox cust-a", "Sandbox cust-b"))
-        self.assertEqual(self.mist.sites[b.mist_site_id]["name"], "Sandbox cust-b")
+        self.assertEqual(self.mist.site_records[b.mist_site_id]["name"], "Sandbox cust-b")
 
     def test_the_park_bridge_is_shared_and_goes_with_the_last_sandbox(self):
         a = self.manager.create_sandbox("pka", "single-switch", template_vmid=320)
         b = self.manager.create_sandbox("pkb", "single-switch", template_vmid=320)
         parks = [call for call in self.px.called("create_bridge") if call[1][0] == "sbxpark"]
         self.assertEqual(parks, [("create_bridge", ("sbxpark",), {"mtu": 9216})])
-        first = self.manager.teardown(a, confirm=True)
+        first = self.manager.teardown(a)
         self.assertTrue(first["complete"])
         self.assertIn("sbxpark", self.px.networks)
         self.assertNotIn("sbxpark", first["bridges"])
-        second = self.manager.teardown(b, confirm=True)
+        second = self.manager.teardown(b)
         self.assertNotIn("sbxpark", self.px.networks)
         self.assertNotIn("sbxpark", second["bridges"])
 
@@ -348,11 +348,9 @@ class TestBuildFromShape(Base):
                     self.manager.build_from_shape(shape, name, **kwargs)
                 if words:
                     self.assertIn(words, caught.exception.message)
-        with self.subTest("read-only"):
-            self.manager.settings.allow_writes = False
+        with self.subTest("read-only"), proxmox_may_only_look(self.manager):
             with self.assertRaises(GuardrailViolation):
                 self.manager.build_from_shape("campus-ip-clos", "fresh", template_vmid=320)
-            self.manager.settings.allow_writes = True
         self.assertEqual(self.px.calls, [])
         self.assertEqual(sorted(self.manager.sandboxes), ["taken"])
 
@@ -378,7 +376,7 @@ class TestBuildFromShape(Base):
     def test_a_build_can_make_its_own_mist_site(self):
         result = self.manager.build_from_shape("campus-ip-clos", "with-site", switches=["sbx-acc-01"], template_vmid=320, with_mist_site=True)
         sandbox = result["sandbox"]
-        self.assertEqual(self.mist.sites[sandbox.mist_site_id]["name"], "Sandbox with-site")
+        self.assertEqual(self.mist.site_records[sandbox.mist_site_id]["name"], "Sandbox with-site")
         self.assertEqual(read_state(self.manager, "with-site")["mist_site_id"], sandbox.mist_site_id)
 
     def test_an_image_build_boots_nothing_when_asked_not_to(self):
@@ -429,8 +427,8 @@ class TestRootPassword(Base):
         sandbox = self.manager.create_sandbox("pwd", "single-switch", template_vmid=320)
         self.px.calls.clear()
         self.mist.calls.clear()
-        self.manager.settings.allow_writes = False
-        self.assertRegex(self.manager.reveal_root_password(sandbox)["root_password"], PASSWORD_SHAPE)
+        with proxmox_may_only_look(self.manager):
+            self.assertRegex(self.manager.reveal_root_password(sandbox)["root_password"], PASSWORD_SHAPE)
         self.assertEqual(self.px.calls, [])
         self.assertEqual(self.mist.calls, [])
 
@@ -443,10 +441,10 @@ class TestRootPassword(Base):
             raise BackendError(f"Proxmox API DELETE /qemu/{vmid} failed (500).")
 
         self.px.delete_vm = stuck
-        self.assertFalse(self.manager.teardown(sandbox, confirm=True)["complete"])
+        self.assertFalse(self.manager.teardown(sandbox)["complete"])
         self.assertTrue(os.path.exists(path))
         self.px.delete_vm = original
-        self.assertTrue(self.manager.teardown(sandbox, confirm=True)["complete"])
+        self.assertTrue(self.manager.teardown(sandbox)["complete"])
         self.assertFalse(os.path.exists(path))
 
 
@@ -729,10 +727,8 @@ class TestAdoptSwitch(Base):
         self.assertEqual(self.mist.calls, [])
 
     def test_adoption_is_refused_before_anything_is_sent(self):
-        with self.subTest("read-only"):
-            self.manager.settings.allow_writes = False
+        with self.subTest("read-only"), proxmox_may_only_look(self.manager):
             self.refused(GuardrailViolation)
-            self.manager.settings.allow_writes = True
         with self.subTest("unknown switch"):
             self.refused(GuardrailViolation, node="sbx-acc-09")
         with self.subTest("a client"):
@@ -746,10 +742,8 @@ class TestAdoptSwitch(Base):
             self.mist.token = ""
             self.refused(NotConfigured)
             self.mist.token = "fake-token"
-        with self.subTest("Mist writes off"):
-            self.mist.settings.mist_writes_enabled = False
+        with self.subTest("Mist token may only read"), mist_may_only_read(self.manager):
             self.refused(GuardrailViolation)
-            self.mist.settings.mist_writes_enabled = True
         with self.subTest("no Mist site"):
             plain = self.manager.create_sandbox("plain", "single-switch", template_vmid=320)
             self.refused(GuardrailViolation, sandbox=plain)
@@ -814,10 +808,9 @@ class TestRunApi(Base):
             return error.code, json.loads(error.read() or b"{}")
 
     def test_build_from_a_shape_over_http(self):
-        self.manager.settings.allow_writes = False
-        status, _ = self._call("/api/shapes/campus-ip-clos/build", {"name": "web", "template_vmid": 320})
+        with proxmox_may_only_look(self.manager):
+            status, _ = self._call("/api/shapes/campus-ip-clos/build", {"name": "web", "template_vmid": 320})
         self.assertEqual(status, 409)
-        self.manager.settings.allow_writes = True
         status, body = self._call(
             "/api/shapes/campus-ip-clos/build",
             {"name": "web", "switches": ["sbx-core-01", "sbx-acc-01"], "template_vmid": 320},

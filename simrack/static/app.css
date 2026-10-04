@@ -263,13 +263,22 @@ button.danger.solid:hover:not(:disabled) { background: var(--danger-solid-hover)
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 button.ghost:hover:not(:disabled) { background: var(--hover); color: var(--ink); border-color: var(--line); }
 button.sm { padding: .3125rem .5rem; font-size: var(--t-xs); }
-button.armed { background: var(--bad); color: #fff; border-color: var(--bad); }
+#pausebtn[aria-pressed="true"] { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-line); }
+/* the yes/no box */
+dialog.ask { width: min(28rem, calc(100vw - 2rem)); padding: var(--s-5); color: var(--ink); background: var(--raised);
+         border: 1px solid var(--line-strong); border-radius: var(--r); box-shadow: var(--drop-shadow); }
+dialog.ask::backdrop { background: #0009; }
+dialog.ask form { display: grid; gap: var(--s-3); }
+dialog.ask .ask-q { margin: 0; font-size: var(--t-lg); font-weight: 600; overflow-wrap: anywhere; }
+dialog.ask .note { font-size: var(--t-sm); }
+dialog.ask .ask-choices { margin-top: var(--s-2); }
+dialog.ask .ask-hint { margin: 0; font-size: var(--t-xs); color: var(--faint); }
 button[aria-busy="true"]::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor;
          border-right-color: transparent; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
 
-label.f { display: flex; flex-direction: column; gap: .3125rem; font-size: var(--t-xs); color: var(--muted); font-weight: 550; min-width: 0; }
+label.f, div.f { display: flex; flex-direction: column; gap: .3125rem; font-size: var(--t-xs); color: var(--muted); font-weight: 550; min-width: 0; }
 input, select, textarea { font: var(--t-sm) var(--sans); color: var(--ink); background: var(--field); border: 1px solid var(--line-strong);
                 border-radius: 6px; padding: .4375rem .5625rem; width: 100%; min-width: 0;
                 transition: border-color .15s var(--ease), box-shadow .15s var(--ease); }
@@ -292,6 +301,7 @@ label.check input { width: auto; accent-color: var(--accent); }
 .fields.pair { grid-template-columns: minmax(0, 1fr) 7.5rem; align-items: end; }
 .note { font-size: var(--t-xs); color: var(--muted); margin: 0; }
 .note.warn { color: var(--warn); }
+.note.ok { color: var(--ok); }
 .subhead { margin: 1rem 0 .5rem; font-size: var(--t-sm); font-weight: 600; color: var(--ink); }
 .subhead:first-child { margin-top: 0; }
 
@@ -438,6 +448,40 @@ td .pl { display: block; white-space: nowrap; }
   .checks td.cab { grid-column: 1 / -1; }
   .checks .lbl { display: block; margin-bottom: .25rem; color: var(--faint); font-size: var(--t-xs); }
 }
+
+/* setup: what SimRack signs in with, then what in the lab is live */
+.intake.setup { max-width: calc(46rem + 2 * var(--gut)); }
+.setup-head { display: flex; align-items: flex-start; gap: var(--s-4); }
+.setup-head > div { flex: 1; min-width: 0; }
+.setup section + section { margin-top: var(--s-7); }
+#setup-wait:not(:empty), #setup-problems:not(:empty) { display: grid; gap: var(--s-3); margin-bottom: var(--s-6); }
+.form-err.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-line); }
+.setup form.fields { gap: var(--s-5); }
+.setup fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.setup fieldset > * + * { margin-top: .875rem; }
+.setup fieldset > legend + * { margin-top: 0; }
+.setup legend { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); padding: 0 0 var(--s-3); font-weight: 600; }
+.setup legend .faint { font-size: var(--t-sm); font-weight: 500; }
+/* the rule above a group sits on its legend: a fieldset draws its own top border through the legend */
+.setup fieldset.group + fieldset.group > legend { width: 100%; padding-top: var(--s-5); border-top: 1px solid var(--line); }
+.setup fieldset.protect legend { padding-bottom: var(--s-2); font-size: var(--t-sm); }
+.setup fieldset.protect + fieldset.protect { margin-top: var(--s-5); }
+.fields.two { grid-template-columns: repeat(auto-fit, minmax(max(13rem, calc((100% - var(--s-4)) / 2)), 1fr)); gap: .875rem var(--s-4); }
+.range { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: var(--s-2); }
+.setup details > summary { display: inline-flex; align-items: center; gap: .375rem; list-style: none; cursor: pointer; color: var(--muted); font-size: var(--t-sm); border-radius: 3px; }
+.setup details > summary::-webkit-details-marker { display: none; }
+.setup details > summary::before { content: "›"; display: inline-block; transition: transform .15s var(--ease); }
+.setup details[open] > summary::before { transform: rotate(90deg); }
+.setup details > summary:hover { color: var(--ink); }
+.setup details > * + * { margin-top: .75rem; }
+.ticks { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: .5rem var(--s-4); }
+.ticks label.tick { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .5rem; font-size: var(--t-sm); }
+.ticks label.tick input { margin-top: .1875rem; }
+.ticks .id { display: block; font: var(--t-xs) var(--mono); color: var(--faint); overflow-wrap: anywhere; }
+.ticks .chip { margin-left: .25rem; }
+.setup [aria-invalid="true"] { border-color: var(--bad); }
+.setup [aria-invalid="true"]:focus { box-shadow: 0 0 0 3px var(--bad-soft); }
+#setupbtn[aria-current="page"] { color: var(--ink); background: var(--hover); border-color: var(--line); }
 
 @media (max-width: 900px) {
   .app { grid-template-columns: minmax(0, 1fr); }

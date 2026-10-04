@@ -1,15 +1,17 @@
 """Case 15: the lab profile says what is live, so the code holds no lab of its own.
 
-One TOML file per host names the Proxmox node, the Mist cloud and org, the
-management network and the guests, bridges, sites and subnets SimRack must
-never touch. A profile with a mistake stops start-up and names the key, because
-a typo in a protected list would otherwise leave something live unprotected.
+One TOML file per host, saved by the setup page in SimRack's state folder, names
+the Proxmox node, the Mist org, the management network and the guests, bridges,
+sites and subnets SimRack must never touch. A profile with a mistake is left out
+whole, so SimRack changes nothing, and the key is named, because a typo in a
+protected list would otherwise leave something live unprotected.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import shutil
 import textwrap
 import unittest
 from contextlib import redirect_stderr
@@ -17,16 +19,13 @@ from unittest import mock
 
 from simrack.__main__ import main
 from simrack.config import Settings
-from simrack.profile import ProfileError
 from tests.fakes import TempDir
 
 FULL = """
 [proxmox]
 node = "pve-lab"
-api = "https://192.0.2.5:8006/api2/json"
 
 [mist]
-api = "https://api.eu.mist.com/api/v1"
 org_id = "00000000-0000-0000-0000-000000000001"
 
 [management]
@@ -78,12 +77,10 @@ class TestLabProfile(unittest.TestCase):
 
     def test_a_profile_sets_the_lab_identity(self):
         path = self.write(FULL)
-        settings = Settings.from_env({"SIMRACK_PROFILE": path})
+        settings = Settings.load({"SIMRACK_STATE_DIR": self.tmp})
 
         self.assertEqual(settings.profile_path, path)
         self.assertEqual(settings.pve_node, "pve-lab")
-        self.assertEqual(settings.pve_api_base, "https://192.0.2.5:8006/api2/json")
-        self.assertEqual(settings.mist_api_base, "https://api.eu.mist.com/api/v1")
         self.assertEqual(settings.org_id, "00000000-0000-0000-0000-000000000001")
         self.assertEqual((settings.mgmt_bridge, settings.mgmt_vlan), ("vmbr9", 7))
         self.assertEqual((settings.mgmt_cidr, settings.mgmt_pool), ("192.0.2.0/24", "192.0.2.200-192.0.2.249"))
@@ -97,7 +94,8 @@ class TestLabProfile(unittest.TestCase):
         self.assertEqual((settings.sandbox_bridge_prefix, settings.park_bridge), ("tst", "tstpark"))
 
     def test_optional_keys_fall_back_to_defaults(self):
-        settings = Settings.from_env({"SIMRACK_PROFILE": self.write(MINIMAL)})
+        self.write(MINIMAL)
+        settings = Settings.load({"SIMRACK_STATE_DIR": self.tmp})
 
         self.assertEqual(settings.pve_api_base, "https://127.0.0.1:8006/api2/json")
         self.assertEqual(settings.mist_api_base, "https://api.mist.com/api/v1")
@@ -108,11 +106,14 @@ class TestLabProfile(unittest.TestCase):
         self.assertEqual((settings.sandbox_vmid_start, settings.sandbox_vmid_end), (320, 399))
         self.assertEqual((settings.sandbox_bridge_prefix, settings.park_bridge), ("sbx", "sbxpark"))
 
-    def test_tokens_and_switches_still_come_from_the_environment(self):
-        settings = Settings.from_env(
-            {"SIMRACK_PROFILE": self.write(MINIMAL), "MIST_TOKEN": "t", "SIMRACK_PVE_TOKEN": "p", "SIMRACK_ALLOW_WRITES": "1"}
-        )
-        self.assertEqual((settings.mist_token, settings.pve_token, settings.allow_writes), ("t", "p", True))
+    def test_the_environment_names_no_profile_and_no_tokens(self):
+        elsewhere = self.write(FULL)
+        empty = os.path.join(self.tmp, "state")
+        environ = {"SIMRACK_STATE_DIR": empty, "SIMRACK_PROFILE": elsewhere, "SIMRACK_PVE_TOKEN": "p", "MIST_TOKEN": "t"}
+
+        settings = Settings.load(environ)
+
+        self.assertEqual((settings.profile_path, settings.pve_token, settings.mist_token), ("", "", ""))
 
     def test_a_mistake_names_the_file_and_the_key(self):
         cases = {
@@ -132,34 +133,37 @@ class TestLabProfile(unittest.TestCase):
                 "proxmox.hookscript",
                 "template",
             ),
+            "the Proxmox address, which now goes with its token": (
+                MINIMAL.replace('node = "pve-lab"', 'node = "pve-lab"\napi = "https://192.0.2.5:8006/api2/json"'),
+                "proxmox.api",
+                "next to the Proxmox token",
+            ),
+            "the Mist region, which now goes with its token": (MINIMAL + '\n[mist]\napi = "https://api.eu.mist.com/api/v1"\n', "mist.api", "next to the Mist token"),
         }
         for name, (text, key, hint) in cases.items():
             with self.subTest(name):
                 path = self.write(text)
-                with self.assertRaises(ProfileError) as caught:
-                    Settings.from_env({"SIMRACK_PROFILE": path})
-                message = f"{caught.exception.message} {caught.exception.detail}"
+                settings = Settings.load({"SIMRACK_STATE_DIR": self.tmp})
+                self.assertEqual(settings.profile_path, "", "a bad profile is left out, so SimRack changes nothing")
+                (problem,) = settings.problems
+                self.assertEqual(problem["type"], "ProfileError")
+                message = f"{problem['error']} {problem['detail']}"
                 self.assertIn(path, message)
                 self.assertIn(key, message)
                 self.assertIn(hint, message)
 
-    def test_a_missing_file_is_named(self):
-        path = os.path.join(self.tmp, "nope.toml")
-        with self.assertRaises(ProfileError) as caught:
-            Settings.from_env({"SIMRACK_PROFILE": path})
-        self.assertIn(path, caught.exception.message)
-
-    def test_a_bad_profile_stops_start_up(self):
-        path = self.write(MINIMAL.replace("[protected]", "[protected]\nvmid = [200]"))
+    def test_a_bad_profile_stops_the_state_command(self):
+        self.write(MINIMAL.replace("[protected]", "[protected]\nvmid = [200]"))
         stderr = io.StringIO()
-        with mock.patch.dict(os.environ, {"SIMRACK_PROFILE": path}), redirect_stderr(stderr):
+        with mock.patch.dict(os.environ, {"SIMRACK_STATE_DIR": self.tmp}), redirect_stderr(stderr):
             code = main(["state"])
         self.assertEqual(code, 2)
         self.assertIn("protected.vmid", stderr.getvalue())
 
     def test_the_shipped_example_profile_loads(self):
         example = os.path.join(os.path.dirname(__file__), os.pardir, "lab-profile.example.toml")
-        settings = Settings.from_env({"SIMRACK_PROFILE": example})
+        shutil.copyfile(example, os.path.join(self.tmp, "lab-profile.toml"))
+        settings = Settings.load({"SIMRACK_STATE_DIR": self.tmp})
         self.assertTrue(settings.production_bridges, "the example shows what a protected bridge looks like")
 
 

@@ -19,7 +19,7 @@ import urllib.request
 from simrack.api import serve
 from simrack.errors import LabError, NotFound
 from simrack.shapes import shape_from_mist
-from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
+from tests.fakes import PVE_AUDITOR, FakeMist, FakeProxmox, TempDir, make_manager
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "campus.json")
 
@@ -217,8 +217,8 @@ class TestShapeStore(unittest.TestCase):
         self.assertEqual([s["name"] for s in manager.state()["shapes"]], ["campus-ip-clos"])
 
     def test_import_works_read_only_and_touches_nothing(self):
-        proxmox, mist = FakeProxmox(), FakeMist(writes=False)
-        manager = make_manager(self.tmp, proxmox=proxmox, mist=mist, allow_writes=False)
+        proxmox, mist = FakeProxmox(privileges=PVE_AUDITOR), FakeMist(role="read")
+        manager = make_manager(self.tmp, proxmox=proxmox, mist=mist)
         manager.import_shape(bundle())
         self.assertEqual(proxmox.calls, [])
         self.assertEqual(mist.calls, [])
@@ -252,7 +252,7 @@ class TestShapeApi(unittest.TestCase):
     def setUp(self):
         self._tmp = TempDir()
         self.tmp = self._tmp.__enter__()
-        self.manager = make_manager(self.tmp, allow_writes=False)
+        self.manager = make_manager(self.tmp, proxmox=FakeProxmox(privileges=PVE_AUDITOR))
         self.httpd = serve(self.manager, "127.0.0.1", 0, token="")
         self.httpd.log = lambda message: None
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"

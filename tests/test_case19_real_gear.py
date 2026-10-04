@@ -35,14 +35,15 @@ class Reply:
         return self.body
 
 
-def wire(client, call):
-    """Run ``call(client)`` with the network stubbed; return each request as it left."""
+def wire(client, call, body=None):
+    """Run ``call(client)`` with the network stubbed; return each request as it left.
+    Each reply is ``body`` (bytes), or a Proxmox task id when it is None."""
     sent = []
 
     def fake_urlopen(request, timeout, context):
         form = urllib.parse.parse_qs((request.data or b"").decode())
         sent.append({"method": request.get_method(), "url": request.full_url, "form": form, "context": context})
-        return Reply()
+        return Reply() if body is None else Reply(body)
 
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         call(client)
@@ -245,7 +246,7 @@ class TestMistSnapshotSecrets(unittest.TestCase):
 
     def test_teardown_removes_the_sandboxs_mist_snapshots(self):
         folder = os.path.dirname(self.manager.mist_snapshot(self.sandbox, "good")["path"])
-        self.manager.teardown(self.sandbox, confirm=True)
+        self.manager.teardown(self.sandbox)
         self.assertFalse(os.path.exists(folder))
 
 
@@ -295,13 +296,14 @@ class TestMistRevertTopologies(unittest.TestCase):
         self.assertEqual({(s["mac"], s["role"]) for s in back["switches"]}, {(s["mac"], s["role"]) for s in self.good["switches"]})
         self.assertEqual(result["devices_restored"], 2, "the switches still go back after the topology")
 
-    def test_the_client_deletes_a_topology_only_when_mist_writes_are_on(self):
-        client = MistClient(Settings(mist_token="t", org_id="org-1", mist_writes_enabled=True))
+    def test_the_client_deletes_a_topology_only_when_its_write_gate_allows(self):
+        client = MistClient(Settings(mist_token="t", org_id="org-1"), write_gate=lambda: None)
         sent = wire(client, lambda c: c.delete_evpn_topology("s1", "t1"))
         self.assertEqual([(s["method"], urllib.parse.urlparse(s["url"]).path) for s in sent], [("DELETE", "/api/v1/sites/s1/evpn_topologies/t1")])
-        off = MistClient(Settings(mist_token="t", org_id="org-1", mist_writes_enabled=False))
-        with self.assertRaises(GuardrailViolation):
-            self.assertEqual(wire(off, lambda c: c.delete_evpn_topology("s1", "t1")), [])
+        shut = MistClient(Settings(mist_token="t", org_id="org-1"), write_gate=lambda: (GuardrailViolation, "Changes are paused.", ""))
+        with mock.patch("urllib.request.urlopen") as urlopen, self.assertRaises(GuardrailViolation):
+            shut.delete_evpn_topology("s1", "t1")
+        urlopen.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,20 +1,20 @@
 # SimRack lab profile: what is live on this host, so SimRack never touches it.
 #
-# Copy this file, fill it in for your lab and point SIMRACK_PROFILE at it.
+# SimRack's setup page writes this file in its state folder
+# (/opt/simrack/state/lab-profile.toml), and exports and imports it, so you never
+# edit it by hand. This copy shows every key.
 # Without a profile SimRack stays read-only. A mistake here (an unknown key, a
-# wrong type, a pool outside its subnet) stops start-up and names the key.
-# Secrets never go here: tokens stay in the service environment file.
+# wrong type, a pool outside its subnet) leaves the whole file out, so SimRack
+# changes nothing, and the setup page names the key.
+# Secrets never go here. The setup page keeps the tokens, each with the address
+# it may be sent to, in a separate file only SimRack can read.
 
 [proxmox]
 # The Proxmox node name. It is case sensitive: pveproxy answers HTTP 596 for the wrong case.
 node = "pve1"
-# Point api at the host itself: SimRack checks the certificate of any other address,
-# and the Proxmox one is self-signed unless you replaced it.
-# api = "https://127.0.0.1:8006/api2/json"
 
 [mist]
-# Your org's API host: api.mist.com, api.gc1.mist.com, api.eu.mist.com and so on.
-api = "https://api.mist.com/api/v1"
+# Your org. Its region is set next to the Mist token on the setup page.
 org_id = "00000000-0000-0000-0000-000000000001"
 
 [management]
@@ -43,3 +43,8 @@ subnets = ["10.10.10.0/24", "172.16.254.0/23"]
 # lxc = [350, 399]
 # bridge_prefix = "sbx"   # deploy/simrack-sbx.sh matches sbx*; change it there too
 # park_bridge = "sbxpark"
+
+# [assistants] is optional and off by default.
+# [assistants]
+# risky = false   # true lets an assistant on the MCP server tear down, revert,
+#                 # delete switches and type at a switch's console
