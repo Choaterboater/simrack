@@ -1,25 +1,25 @@
 ---
-name: labfront
-description: LabFront runbook for vJunos sandboxes on Proxmox. Use for LabFront deploys, lab builds, rebuilds, teardowns and lab troubleshooting.
-tags: [labfront, proxmox, vjunos]
+name: simrack
+description: SimRack runbook for vJunos sandboxes on Proxmox. Use for SimRack deploys, lab builds, rebuilds, teardowns and lab troubleshooting.
+tags: [simrack, proxmox, vjunos]
 ---
 
-# LabFront: vJunos sandboxes on Proxmox
+# SimRack: vJunos sandboxes on Proxmox
 
-LabFront builds throwaway vJunos switch **sandboxes** on one Proxmox host and can adopt them into a Mist org. A TOML **lab profile** says what is protected and which ranges sandboxes may use. The detail lives in the LabFront checkout, or in `/opt/labfront/` on the host: `ADVICE.md` (build order, teardown by hand, symptom table, host gotchas) and `README.md` (profile keys, environment, deploy). Read the matching ADVICE section before you act on it.
+SimRack builds throwaway vJunos switch **sandboxes** on one Proxmox host and can adopt them into a Mist org. A TOML **lab profile** says what is protected and which ranges sandboxes may use. The detail lives in the SimRack checkout, or in `/opt/simrack/` on the host: `ADVICE.md` (build order, teardown by hand, symptom table, host gotchas) and `README.md` (profile keys, environment, deploy). Read the matching ADVICE section before you act on it.
 
 ## When to use
 - Building, rebuilding or tearing down a sandbox, or importing a fabric shape.
-- Deploying or upgrading LabFront on a Proxmox host.
+- Deploying or upgrading SimRack on a Proxmox host.
 - A sandbox misbehaves: no Mist adoption, flapping BGP, HTTP 596, low memory, a bad cable.
 
-Work only on sandboxes: VMIDs and bridges inside the profile's `[sandbox]` ranges. LabFront refuses anything under `[protected]`; that is someone's live lab.
+Work only on sandboxes: VMIDs and bridges inside the profile's `[sandbox]` ranges. SimRack refuses anything under `[protected]`; that is someone's live lab.
 
 ## Sign-in and tokens
-Secrets live in `/opt/labfront/labfront.env` (mode 600), loaded by the systemd unit. Name them; keep their values out of chat, logs and commits.
-- `LABFRONT_PVE_TOKEN`: Proxmox API token, `user@realm!tokenid=<secret>`.
+Secrets live in `/opt/simrack/simrack.env` (mode 600), loaded by the systemd unit. Name them; keep their values out of chat, logs and commits.
+- `SIMRACK_PVE_TOKEN`: Proxmox API token, `user@realm!tokenid=<secret>`.
 - `MIST_TOKEN`: org admin token for the profile's `[mist] org_id`.
-- `LABFRONT_TOKEN`: when set, every API call needs `Authorization: Bearer <token>`. Unset, LabFront answers on loopback only: `ssh -N -L 8787:127.0.0.1:8787 <ssh host>`, then open `http://127.0.0.1:8787`.
+- `SIMRACK_TOKEN`: when set, every API call needs `Authorization: Bearer <token>`. Unset, SimRack answers on loopback only: `ssh -N -L 8787:127.0.0.1:8787 <ssh host>`, then open `http://127.0.0.1:8787`.
 
 ## Read first
 Done when you can state: profile loaded or not, writes on or off and why, free RAM, and each sandbox with its nodes.
@@ -31,7 +31,7 @@ Done when you can state: profile loaded or not, writes on or off and why, free R
 MCP: Casper's change box asks; don't ask again in chat. Else ask the user first; show the exact call.
 Casper also asks before a shell command reaches a new host.
 Every change is a POST with `Content-Type: application/json`.
-1. Confirm the target is a sandbox and `writes_enabled` is true. If not, `read_only_reason` says why: no profile (`LABFRONT_PROFILE`) or `LABFRONT_ALLOW_WRITES` not `1`. Mist changes also need `LABFRONT_MIST_WRITES=1`. Editing `labfront.env` and `systemctl restart labfront` is itself a change: ask.
+1. Confirm the target is a sandbox and `writes_enabled` is true. If not, `read_only_reason` says why: no profile (`SIMRACK_PROFILE`) or `SIMRACK_ALLOW_WRITES` not `1`. Mist changes also need `SIMRACK_MIST_WRITES=1`. Editing `simrack.env` and `systemctl restart simrack` is itself a change: ask.
 2. Snapshot first, in both places (`revert` and `mist/revert` take the label):
    WRITE: `POST /api/sandboxes/<name>/snapshot` and `POST /api/sandboxes/<name>/mist/snapshot` with `{"label": "<label>"}`.
 3. Make one change, then read state again. Stop at the first error and show it.
@@ -43,7 +43,7 @@ The writes:
 - WRITE: `POST /api/sandboxes/<name>/mist/fabric` builds the fabric in Mist; it saves a Mist revert point first.
 - WRITE: `POST /api/sandboxes/<name>/fabric/check` reports cabling; with writes on it also re-plugs wrong ends.
 - WRITE: `POST /api/sandboxes/<name>/teardown` `{"confirm": true}` removes guests, bridges and the Mist site (`"keep_mist": true` keeps the site).
-- WRITE: `LABFRONT_HOST=<ssh host> ./deploy/deploy.sh` copies the checkout to `/opt/labfront`, runs the tests there and restarts the service.
+- WRITE: `SIMRACK_HOST=<ssh host> ./deploy/deploy.sh` copies the checkout to `/opt/simrack`, runs the tests there and restarts the service.
 
 Every write has run only against test fakes so far: watch the first real one end to end.
 
@@ -56,13 +56,13 @@ Every write has run only against test fakes so far: watch the first real one end
 ## Common traps
 - The node name is case sensitive; the wrong case gives HTTP 596 "certificate verify failed". Copy it from `pvesh get /nodes`.
 - Fabric bridges are MTU 9216; at 1500 the overlay BGP flaps every ~90 s.
-- Clone only from a never-booted template: vJunos may bake its serial and MACs in on first boot. LabFront refuses a source that is not a Proxmox template. Prove two clones report different serials before building more (ADVICE, step 3).
+- Clone only from a never-booted template: vJunos may bake its serial and MACs in on first boot. SimRack refuses a source that is not a Proxmox template. Prove two clones report different serials before building more (ADVICE, step 3).
 - A build that would leave less than `limits.min_free_ram_mb` free is refused. vJunos memory is never ballooned; stop a sandbox or use `single-switch`.
 - Static out-of-band management needs `use_mgmt_vrf: true`, or the switch loses the cloud.
 - One cable, one bridge, one /31; never a shared transit VLAN.
 - Bridges in files that `/etc/network/interfaces` sources are invisible to the Proxmox API (ADVICE, section 7).
-- A profile that protects one of LabFront's fixed sandbox ranges blocks fabric builds (README, The safety model).
-- LabFront re-opens LACP after each start it makes. A start from the Proxmox GUI keeps LACP only if the template carries the optional hookscript `deploy/labfront-sbx.sh`, which matches `sbx*`: a new `bridge_prefix` needs it changed too.
+- A profile that protects one of SimRack's fixed sandbox ranges blocks fabric builds (README, The safety model).
+- SimRack re-opens LACP after each start it makes. A start from the Proxmox GUI keeps LACP only if the template carries the optional hookscript `deploy/simrack-sbx.sh`, which matches `sbx*`: a new `bridge_prefix` needs it changed too.
 - Mist calls failing with "certificate verify failed" mean the network inspects TLS: its CA belongs in the host's trust store. Never turn certificate checks off.
 
 More symptoms and fixes: ADVICE, section 4.

@@ -1,7 +1,7 @@
-"""LabFront: a sandbox front end for a vJunos + Mist lab on Proxmox.
+"""SimRack: a sandbox front end for a vJunos + Mist lab on Proxmox.
 
 Standard library only, on purpose: this runs on a lab host where installing
-packages is a risk. The lab profile says what is live; labfront.guardrails
+packages is a risk. The lab profile says what is live; simrack.guardrails
 keeps every action off it.
 """
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import ipaddress
 import unittest
 
-from labfront.api import build_router
+from simrack.api import build_router
 from tests.fakes import FakeProxmox, TempDir, make_manager
 
 

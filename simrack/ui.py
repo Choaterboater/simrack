@@ -1,4 +1,4 @@
-"""The single-page UI: plain HTML, CSS and JavaScript in ``labfront/static``.
+"""The single-page UI: plain HTML, CSS and JavaScript in ``simrack/static``.
 
 No build step and no CDN. The files are read once at start-up and served as is.
 """

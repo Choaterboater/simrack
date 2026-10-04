@@ -1,4 +1,4 @@
-"""The rules that keep LabFront off the live lab. All refusals raise GuardrailViolation.
+"""The rules that keep SimRack off the live lab. All refusals raise GuardrailViolation.
 
 What is live comes from the lab profile; see profile.py.
 """
@@ -24,13 +24,13 @@ class Guardrails:
         if vmid in self.settings.production_vmids:
             raise GuardrailViolation(
                 f"vmid {vmid} is part of the live lab.",
-                detail="The lab profile lists it under [protected] vmids, so LabFront never touches it. "
+                detail="The lab profile lists it under [protected] vmids, so SimRack never touches it. "
                 f"Sandboxes use {self.settings.sandbox_vmid_start}-{self.settings.sandbox_vmid_end}.",
             )
         if vmid in self.settings.production_lxc:
             raise GuardrailViolation(
                 f"vmid {vmid} is a live lab container.",
-                detail="The lab profile lists it under [protected] lxc, so LabFront never touches it.",
+                detail="The lab profile lists it under [protected] lxc, so SimRack never touches it.",
             )
         if not self.settings.sandbox_vmid_start <= vmid <= self.settings.sandbox_vmid_end:
             raise GuardrailViolation(
@@ -71,7 +71,7 @@ class Guardrails:
         if name in self.settings.production_bridges:
             raise GuardrailViolation(
                 f"bridge {name} carries the live lab.",
-                detail="The lab profile lists it under [protected] bridges, so LabFront never modifies it.",
+                detail="The lab profile lists it under [protected] bridges, so SimRack never modifies it.",
             )
         if not name.startswith(self.settings.sandbox_bridge_prefix):
             raise GuardrailViolation(
@@ -87,7 +87,7 @@ class Guardrails:
             raise GuardrailViolation(
                 f"Mist site {site_id} is live.",
                 detail="The lab profile lists it under [protected] mist_sites. "
-                "LabFront writes only to sandbox sites. Build a sandbox site first.",
+                "SimRack writes only to sandbox sites. Build a sandbox site first.",
             )
 
     # -- subnets ----------------------------------------------------------------
@@ -103,7 +103,7 @@ class Guardrails:
                 if net.overlaps(ipaddress.ip_network(live)):
                     raise GuardrailViolation(
                         f"The sandbox {what} subnet {cidr} overlaps the protected subnet {live}.",
-                        detail="The lab profile lists it under [protected] subnets, and LabFront never builds "
+                        detail="The lab profile lists it under [protected] subnets, and SimRack never builds "
                         "on a live subnet. Use a recipe or shape on other subnets, or take the subnet out "
                         "of the profile if it is not live.",
                     )
@@ -128,10 +128,10 @@ class Guardrails:
             return None
         if not self.settings.profile_path:
             return (
-                "LabFront is read-only: no lab profile is loaded.",
+                "SimRack is read-only: no lab profile is loaded.",
                 f"{NO_PROFILE} lab-profile.example.toml shows every key.",
             )
-        return ("LabFront is in read-only mode.", "Set LABFRONT_ALLOW_WRITES=1 in the service environment and restart to let it change the lab.")
+        return ("SimRack is in read-only mode.", "Set SIMRACK_ALLOW_WRITES=1 in the service environment and restart to let it change the lab.")
 
     def check_writes_enabled(self) -> None:
         reason = self.read_only_reason()

@@ -1,7 +1,7 @@
 /* Day or dark, picked in the head so the first paint is already right.
-   LabFront follows the computer's light or dark setting. The switch in the top
+   SimRack follows the computer's light or dark setting. The switch in the top
    bar picks the other theme and remembers it; switching back to the theme the
-   computer already uses forgets the choice, so LabFront follows it again. */
+   computer already uses forgets the choice, so SimRack follows it again. */
 (() => {
   const root = document.documentElement, KEY = "lf_theme";
   const light = matchMedia("(prefers-color-scheme: light)");

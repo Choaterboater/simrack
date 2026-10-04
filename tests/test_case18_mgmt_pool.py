@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import unittest
 
-from labfront.errors import GuardrailViolation
-from labfront.service import SandboxManager
+from simrack.errors import GuardrailViolation
+from simrack.service import SandboxManager
 from tests.fakes import FakeMist, FakeProxmox, TempDir
 from tests.test_case17_profile_guardrails import WRITES, profile_settings
 

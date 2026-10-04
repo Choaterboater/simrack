@@ -22,13 +22,13 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
-from labfront.api import serve
-from labfront.config import Settings
-from labfront.console import CLI, INCORRECT, LOGIN, SerialConsole, Session, adopt
-from labfront.errors import BackendError, GuardrailViolation, LabError, NotConfigured, NotFound
-from labfront.mist import MistClient
-from labfront.service import _bridge_name
-from labfront.shapes import plan_build, shape_from_mist
+from simrack.api import serve
+from simrack.config import Settings
+from simrack.console import CLI, INCORRECT, LOGIN, SerialConsole, Session, adopt
+from simrack.errors import BackendError, GuardrailViolation, LabError, NotConfigured, NotFound
+from simrack.mist import MistClient
+from simrack.service import _bridge_name
+from simrack.shapes import plan_build, shape_from_mist
 from tests.fakes import FakeConsole, FakeMist, FakeProxmox, TempDir, make_manager, read_state
 from tests.test_case9_shapes import LIVE_CABLES, bundle
 
@@ -545,7 +545,7 @@ class TestAdopt(unittest.TestCase):
         with self.assertRaises(BackendError) as caught:
             adopt(device, HOST, PASSWORD, LINES)
         error = caught.exception
-        self.assertIn("has a password LabFront doesn't know", error.message)
+        self.assertIn("has a password SimRack doesn't know", error.message)
         self.assertIn("Reveal", error.detail)
         self.assertEqual((device.config, device.candidate), ([], []))
         text = f"{error} {error.message} {error.detail}"
@@ -669,7 +669,7 @@ class TestSerialConsole(unittest.TestCase):
 
     def test_long_lines_go_out_in_paced_chunks(self):
         thread, received = self._serve()
-        with mock.patch("labfront.console.time.sleep") as pause:
+        with mock.patch("simrack.console.time.sleep") as pause:
             with SerialConsole(self.path) as port:
                 port.send("x" * 300)
         thread.join(5)

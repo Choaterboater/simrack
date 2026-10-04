@@ -238,7 +238,7 @@ class _Adoption:
             if index == 3:
                 raise BackendError(
                     f"{self.host} is sitting in configuration mode.",
-                    detail="Someone is mid-change on its console. Commit or exit there first; LabFront typed nothing into it.",
+                    detail="Someone is mid-change on its console. Commit or exit there first; SimRack typed nothing into it.",
                 )
         raise BackendError(
             f"{self.host} did not answer on its serial console.",
@@ -260,9 +260,9 @@ class _Adoption:
             if index == -1:
                 raise BackendError(f"{self.host} did not finish logging in.", detail="Nothing was changed. Check its console.")
             raise BackendError(
-                f"{self.host} has a password LabFront doesn't know.",
+                f"{self.host} has a password SimRack doesn't know.",
                 detail="Its root password is neither empty nor this sandbox's password (see Reveal). "
-                "LabFront changed nothing.",
+                "SimRack changed nothing.",
             )
 
     def _configure(self) -> None:
@@ -319,7 +319,7 @@ class _Adoption:
             self.stuck = True
             raise BackendError(
                 f"{self.host} did not finish the commit.",
-                detail="It may still finish; check the console before adopting again. LabFront rolled nothing back.",
+                detail="It may still finish; check the console before adopting again. SimRack rolled nothing back.",
             )
 
     def _rollback(self, refused: _Refused) -> None:
@@ -344,9 +344,9 @@ class _Adoption:
             self.stuck = True
             raise BackendError(
                 message,
-                detail="LabFront could not roll it back; open the console, run rollback 0 and exit.",
+                detail="SimRack could not roll it back; open the console, run rollback 0 and exit.",
             ) from None
-        raise BackendError(message, detail="Nothing was committed: LabFront rolled the change back.")
+        raise BackendError(message, detail="Nothing was committed: SimRack rolled the change back.")
 
     def _dhcp(self) -> str | None:
         for attempt in range(self.tries):
@@ -360,7 +360,7 @@ class _Adoption:
         return None
 
     def _leave(self) -> None:
-        """Log out if LabFront logged in; leave a console it found open as it was."""
+        """Log out if SimRack logged in; leave a console it found open as it was."""
         if self.stuck:
             return
         try:

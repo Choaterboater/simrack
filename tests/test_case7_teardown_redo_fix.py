@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import unittest
 
-from labfront.errors import BackendError, GuardrailViolation
+from simrack.errors import BackendError, GuardrailViolation
 from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
 
 ADVICE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ADVICE.md")

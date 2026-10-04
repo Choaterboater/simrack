@@ -49,7 +49,7 @@ class TestRepoHygiene(unittest.TestCase):
     def test_the_scan_sees_the_whole_repository(self):
         names = {str(relative) for relative, _ in shipped_text_files()}
         self.assertIn("README.md", names)
-        self.assertIn("labfront/config.py", names)
+        self.assertIn("simrack/config.py", names)
         self.assertTrue(any(name.startswith("tests/fixtures/") for name in names), "the sample fabric was not scanned")
 
     def test_only_placeholder_uuids_ship(self):

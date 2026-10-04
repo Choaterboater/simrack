@@ -162,7 +162,7 @@ class SandboxManager:
 
     @staticmethod
     def _write_private(path: str, data: bytes) -> None:
-        """Atomic, and readable only by LabFront's own user: 0600 in a 0700 folder."""
+        """Atomic, and readable only by SimRack's own user: 0600 in a 0700 folder."""
         folder = os.path.dirname(path)
         os.makedirs(folder, mode=0o700, exist_ok=True)
         os.chmod(folder, 0o700)
@@ -483,7 +483,7 @@ class SandboxManager:
         if template_vmid and not image and str(self.proxmox.get_vm(template_vmid).get("template", 0)) != "1":
             raise GuardrailViolation(
                 f"vmid {template_vmid} is not a template.",
-                detail="LabFront clones only a Proxmox template. Make one with qm template <vmid> "
+                detail="SimRack clones only a Proxmox template. Make one with qm template <vmid> "
                 "from a vJunos that has never booted (ADVICE.md, step 2).",
             )
 
@@ -518,7 +518,7 @@ class SandboxManager:
         if kind in PORT_KINDS:
             self._ensure_park()
 
-        created = False  # the vmid is LabFront's once Proxmox accepts the create or clone
+        created = False  # the vmid is SimRack's once Proxmox accepts the create or clone
         try:
             if image:
                 nics = self._switch_nics({}) if kind in PORT_KINDS else {}
@@ -617,8 +617,8 @@ class SandboxManager:
             used |= {int(vm["vmid"]) for vm in self.proxmox.list_vms()}
         except (KeyError, TypeError, ValueError) as error:
             raise BackendError(
-                "Proxmox listed its guests in a shape LabFront does not know.",
-                detail="LabFront picks a vmid only from the full list of guests, so it built nothing.",
+                "Proxmox listed its guests in a shape SimRack does not know.",
+                detail="SimRack picks a vmid only from the full list of guests, so it built nothing.",
             ) from error
         for candidate in range(start, end + 1):
             if candidate not in used:
@@ -729,7 +729,7 @@ class SandboxManager:
 
     def _reopen_lacp(self, sandbox: Sandbox, node: Node) -> None:
         """A start gives the guest new taps, and a new tap drops LACP. The
-        template hookscript is optional, so LabFront opens them itself."""
+        template hookscript is optional, so SimRack opens them itself."""
         for link in sandbox.links:
             for end_node, port in link.endpoints():
                 if end_node == node.name:
@@ -1042,7 +1042,7 @@ class SandboxManager:
         if not self.mist.writes_enabled():
             raise GuardrailViolation(
                 "Mist writes are disabled.",
-                detail="Set LABFRONT_MIST_WRITES=1 to let the front end build fabrics in Mist.",
+                detail="Set SIMRACK_MIST_WRITES=1 to let the front end build fabrics in Mist.",
             )
         site_id = self._require_site(sandbox)
         recipe = sandbox.recipe
@@ -1578,7 +1578,7 @@ class SandboxManager:
         if not self.mist.configured():
             raise NotConfigured("Mist is not configured.", detail="Set MIST_TOKEN to adopt switches.")
         if not self.mist.writes_enabled():
-            raise GuardrailViolation("Mist writes are off.", detail="Set LABFRONT_MIST_WRITES=1 to adopt switches.")
+            raise GuardrailViolation("Mist writes are off.", detail="Set SIMRACK_MIST_WRITES=1 to adopt switches.")
         site_id = self._require_site(sandbox)
         path = os.path.join(self.settings.serial_dir, f"{node.vmid}.serial0")
         if console is None and not os.path.exists(path):

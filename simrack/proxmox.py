@@ -49,7 +49,7 @@ class ProxmoxClient:
         if not self.token:
             raise NotConfigured(
                 "Proxmox API token is not set.",
-                detail="Set LABFRONT_PVE_TOKEN (root@pam!labfront=...) in the service environment.",
+                detail="Set SIMRACK_PVE_TOKEN (root@pam!simrack=...) in the service environment.",
             )
         url = f"{self.base}{path}"
         data = None
@@ -82,7 +82,7 @@ class ProxmoxClient:
             detail = str(error.reason)
             if isinstance(error.reason, ssl.SSLCertVerificationError):
                 detail += (
-                    ". LabFront runs on the Proxmox host, so set [proxmox] api to "
+                    ". SimRack runs on the Proxmox host, so set [proxmox] api to "
                     "https://127.0.0.1:8006/api2/json, or give that host a certificate this one trusts."
                 )
             raise BackendError(f"Cannot reach the Proxmox API at {self.base}.", detail=detail) from error

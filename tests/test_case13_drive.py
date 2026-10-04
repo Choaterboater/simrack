@@ -1,4 +1,4 @@
-"""Case 13: drive the fabric from LabFront (the "drive" stage).
+"""Case 13: drive the fabric from SimRack (the "drive" stage).
 
 "Build fabric in Mist" turns a cabled sandbox into the Mist campus fabric that
 matches it: site networks and VRF in the live lab's format, the root password,
@@ -21,15 +21,15 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
-from labfront import fabric
-from labfront.api import build_router, serve
-from labfront.config import Settings
-from labfront.errors import BackendError, GuardrailViolation, NotConfigured
-from labfront.mist import MistClient
-from labfront.models import Link, Node, Sandbox
-from labfront.profile import load_profile
-from labfront.recipes import ip_clos_sandbox
-from labfront.service import _bridge_name
+from simrack import fabric
+from simrack.api import build_router, serve
+from simrack.config import Settings
+from simrack.errors import BackendError, GuardrailViolation, NotConfigured
+from simrack.mist import MistClient
+from simrack.models import Link, Node, Sandbox
+from simrack.profile import load_profile
+from simrack.recipes import ip_clos_sandbox
+from simrack.service import _bridge_name
 from tests.fakes import LAB_PROFILE, read_state
 from tests.test_case12_build_from_shape import Base
 from tests.test_case9_shapes import bundle

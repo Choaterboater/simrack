@@ -65,10 +65,10 @@ IMAGE_PATTERNS = {
     "import": r"^[A-Za-z0-9_-]+:import/[A-Za-z0-9_.+-]+\.(qcow2|img|raw|vmdk)$",
 }
 
-STATE_DIR = "/opt/labfront/state"
+STATE_DIR = "/opt/simrack/state"
 
-#: Why LabFront changes nothing until a lab profile says what is live.
-NO_PROFILE = "Set LABFRONT_PROFILE to this lab's profile and restart. Without one LabFront cannot tell what is live, so it changes nothing."
+#: Why SimRack changes nothing until a lab profile says what is live.
+NO_PROFILE = "Set SIMRACK_PROFILE to this lab's profile and restart. Without one SimRack cannot tell what is live, so it changes nothing."
 
 
 @dataclass
@@ -116,10 +116,10 @@ class Settings:
 
     @classmethod
     def from_env(cls, environ=None) -> "Settings":
-        """Load the lab profile named by LABFRONT_PROFILE; raise ProfileError if it is bad."""
+        """Load the lab profile named by SIMRACK_PROFILE; raise ProfileError if it is bad."""
         environ = os.environ if environ is None else environ
         lab: dict = {}
-        path = environ.get("LABFRONT_PROFILE", "")
+        path = environ.get("SIMRACK_PROFILE", "")
         if path:
             from .profile import load_profile
 
@@ -128,10 +128,10 @@ class Settings:
         # Without a profile nothing says what is live, so the write switches stay off.
         return cls(
             **lab,
-            pve_token=environ.get("LABFRONT_PVE_TOKEN", ""),
+            pve_token=environ.get("SIMRACK_PVE_TOKEN", ""),
             mist_token=environ.get("MIST_TOKEN", ""),
-            mist_writes_enabled=bool(path) and environ.get("LABFRONT_MIST_WRITES", "0") == "1",
-            allow_writes=bool(path) and environ.get("LABFRONT_ALLOW_WRITES", "0") == "1",
-            state_dir=environ.get("LABFRONT_STATE_DIR", STATE_DIR),
-            extras={"token": environ.get("LABFRONT_TOKEN", "")},
+            mist_writes_enabled=bool(path) and environ.get("SIMRACK_MIST_WRITES", "0") == "1",
+            allow_writes=bool(path) and environ.get("SIMRACK_ALLOW_WRITES", "0") == "1",
+            state_dir=environ.get("SIMRACK_STATE_DIR", STATE_DIR),
+            extras={"token": environ.get("SIMRACK_TOKEN", "")},
         )

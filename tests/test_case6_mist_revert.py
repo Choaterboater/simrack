@@ -12,7 +12,7 @@ import json
 import os
 import unittest
 
-from labfront.errors import GuardrailViolation, NotFound
+from simrack.errors import GuardrailViolation, NotFound
 from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
 
 

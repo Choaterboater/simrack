@@ -1,6 +1,6 @@
 [Unit]
-Description=LabFront sandbox front end for a vJunos + Mist lab
-Documentation=file:///opt/labfront/README.md
+Description=SimRack sandbox front end for a vJunos + Mist lab
+Documentation=file:///opt/simrack/README.md
 After=network-online.target pveproxy.service
 Wants=network-online.target
 
@@ -9,18 +9,18 @@ Type=simple
 # Needs root: the Proxmox API token is full-privilege and the Mist adoption
 # console is a root-owned unix socket under /var/run/qemu-server.
 User=root
-WorkingDirectory=/opt/labfront
-# labfront.env holds the tokens and LABFRONT_PROFILE, the lab profile that says
-# what is live. Without a profile LabFront stays read-only.
-EnvironmentFile=/opt/labfront/labfront.env
-ExecStart=/usr/bin/python3 -m labfront serve --host 127.0.0.1 --port 8787
+WorkingDirectory=/opt/simrack
+# simrack.env holds the tokens and SIMRACK_PROFILE, the lab profile that says
+# what is live. Without a profile SimRack stays read-only.
+EnvironmentFile=/opt/simrack/simrack.env
+ExecStart=/usr/bin/python3 -m simrack serve --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=5
 # The app only needs to read its own directory and talk to HTTPS APIs.
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/opt/labfront/state
+ReadWritePaths=/opt/simrack/state
 
 [Install]
 WantedBy=multi-user.target

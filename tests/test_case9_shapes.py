@@ -16,9 +16,9 @@ import unittest
 import urllib.error
 import urllib.request
 
-from labfront.api import serve
-from labfront.errors import LabError, NotFound
-from labfront.shapes import shape_from_mist
+from simrack.api import serve
+from simrack.errors import LabError, NotFound
+from simrack.shapes import shape_from_mist
 from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "campus.json")

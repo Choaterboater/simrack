@@ -1,19 +1,19 @@
-# LabFront
+# SimRack
 
 A sandbox front end for a **vJunos-switch + Juniper Mist lab on Proxmox VE**.
 
 People can build, re-cable, break and rebuild a lab from a web page, without
 touching Proxmox by hand and without any risk to the live lab. One file, the lab
-profile, says what is live. LabFront refuses any action that would touch what it
+profile, says what is live. SimRack refuses any action that would touch what it
 lists, and without a profile it changes nothing.
 
 Standard library only (Python 3.11 or later). No pip, no build step, nothing to
-install on the host. The page is plain files in `labfront/static/`
+install on the host. The page is plain files in `simrack/static/`
 (`index.html`, `app.css`, `app.js`, `theme.js`), served as they are.
 
 ## Status
 
-LabFront grew in four stages. All four are covered by tests against in-memory
+SimRack grew in four stages. All four are covered by tests against in-memory
 fakes; only part of it has run on a real host.
 
 | Stage | What it adds | On a real host |
@@ -43,30 +43,30 @@ host yet. Start read-only, and read `ADVICE.md` before you turn writes on.
 | **Tear down** | Deletes the guests, the bridges and the Mist site. Never the live lab. |
 | **Import (Shapes)** | Reads a Mist EVPN topology you paste or drop, and previews it as a sandbox plan: switches, cabling, and whether it fits on the host. Nothing is built and nothing is sent to Mist. |
 | **Build (Shapes)** | Builds a sandbox from a shape: the switches you tick, cabled the way Mist saw them, plus an optional Mist site of its own. When the whole shape doesn't fit, a slice with a switch from each tier is pre-ticked. Cables that can't be made are left out and listed with the reason. |
-| **Adopt into Mist** | Logs in over the switch's serial console, sets the sandbox's root password, turns on DHCP on fxp0 and enters the sandbox site's adoption commands. If Junos refuses a line, the change is rolled back. Needs writes, `MIST_TOKEN`, `LABFRONT_MIST_WRITES=1` and the sandbox's own Mist site. |
+| **Adopt into Mist** | Logs in over the switch's serial console, sets the sandbox's root password, turns on DHCP on fxp0 and enters the sandbox site's adoption commands. If Junos refuses a line, the change is rolled back. Needs writes, `MIST_TOKEN`, `SIMRACK_MIST_WRITES=1` and the sandbox's own Mist site. |
 | **Join Mist** | A checklist on the sandbox page: the site, each switch's adoption, Build the fabric in Mist (with the values it sends, and Copy as text), then Check the cabling. **Reveal** shows the sandbox's root password; it works read-only and is never written to Activity. |
 
 ## The lab profile
 
 One TOML file per host says what is live. Copy `lab-profile.example.toml`, fill
-it in for your lab and point `LABFRONT_PROFILE` at it.
+it in for your lab and point `SIMRACK_PROFILE` at it.
 
 | Table | Keys | Meaning |
 |---|---|---|
-| `[proxmox]` | `node` (required), `api` | The node name, spelled exactly as Proxmox spells it: the API is case sensitive. Leave `api` at its default, the host itself: LabFront checks the certificate of any other address. |
+| `[proxmox]` | `node` (required), `api` | The node name, spelled exactly as Proxmox spells it: the API is case sensitive. Leave `api` at its default, the host itself: SimRack checks the certificate of any other address. |
 | `[mist]` | `api`, `org_id` | Your org's API host (`api.mist.com`, `api.gc1.mist.com`, `api.eu.mist.com`…) and org. |
 | `[management]` | `bridge`, `cidr`, `pool` (required), `vlan` | Where fxp0 goes. Leave `vlan` out when the management network is untagged. The pool must sit inside `cidr`. |
-| `[protected]` | `vmids`, `lxc`, `bridges`, `mist_sites`, `subnets` | Everything live. LabFront refuses any action that would touch these. |
+| `[protected]` | `vmids`, `lxc`, `bridges`, `mist_sites`, `subnets` | Everything live. SimRack refuses any action that would touch these. |
 | `[sandbox]` | `vmids`, `lxc`, `bridge_prefix`, `park_bridge` | Optional. The defaults are 320-399, 350-399, `sbx` and `sbxpark`. The optional hookscript matches `sbx*`, so change it too if you change the prefix. |
 
 A mistake in the profile (an unknown key, a wrong type, a pool outside its
 subnet) stops start-up and names the key, because a typo in a protected list
-would otherwise leave something live unprotected. Without a profile LabFront
+would otherwise leave something live unprotected. Without a profile SimRack
 starts read-only and the page says why. Tokens never go in the profile.
 
 ## The safety model
 
-Everything the profile lists as live is refused by `labfront/guardrails.py`, and
+Everything the profile lists as live is refused by `simrack/guardrails.py`, and
 the tests prove it:
 
 - guests only in the sandbox range (320-399 by default); the profile's
@@ -85,14 +85,14 @@ the tests prove it:
 - every fabric bridge is created at **MTU 9216** (1500 causes fabric-wide overlay
   BGP flaps) as a runtime Linux bridge (`ip link`), never through the PVE network
   API, so `/etc/network/interfaces` is never rewritten. They carry
-  `group_fwd_mask 0xfff8`, and LabFront opens LACP on a switch's taps after
+  `group_fwd_mask 0xfff8`, and SimRack opens LACP on a switch's taps after
   every start it makes, because a start gives the guest new taps. A start from
   the Proxmox GUI keeps LACP only if the template carries the optional
   hookscript (see Deploy).
   With writes on, bridges a reboot removed are re-created when the service starts
 - switches are made with only settings an API token may set. A clone copies the
   template's; a boot from an image gets `smbios1` product `VM-VEX` and
-  `cpu: host`. LabFront never sets `args` or `hookscript`: Proxmox lets only
+  `cpu: host`. SimRack never sets `args` or `hookscript`: Proxmox lets only
   `root@pam` set those
 - boot images are limited to `<storage>:iso/*.iso` (CD-ROM on a blank disk) and
   `<storage>:import/*.qcow2|img|raw|vmdk` (imported onto a fresh disk); existing
@@ -101,7 +101,7 @@ the tests prove it:
   running guests are stopped before delete; a teardown that cannot delete
   everything keeps the sandbox record and its Mist site so it can be retried
 - a failed build step deletes only a guest that step created, never one already
-  at that vmid; when Proxmox cannot list its guests, LabFront refuses rather than
+  at that vmid; when Proxmox cannot list its guests, SimRack refuses rather than
   assume a vmid is free
 - POSTs must be `application/json` from the same origin, and run one at a time
 - memory, not a fixed count, decides how many switches fit. Each switch takes
@@ -131,7 +131,7 @@ the tests prove it:
   is the host itself (loopback, where its self-signed certificate never leaves
   the machine). Where the network inspects TLS, Mist calls fail until the
   inspecting CA is in the host's trust store
-- it is **read-only unless** a profile is loaded and `LABFRONT_ALLOW_WRITES=1`
+- it is **read-only unless** a profile is loaded and `SIMRACK_ALLOW_WRITES=1`
 - shapes are local files in `state/shapes/`. Importing and deleting them works
   read-only and never calls Proxmox or Mist. Only the fabric's shape is kept
   (names, roles, pods, ports, AS numbers); addresses, subnets and port configs
@@ -144,23 +144,23 @@ the tests prove it:
 
 ```bash
 # on the Proxmox host, from the project folder
-export LABFRONT_PROFILE=/opt/labfront/lab-profile.toml
-python3 -m labfront state          # read-only inventory
-python3 -m labfront recipes        # the built-in fabric blueprints
-python3 -m labfront serve          # http://127.0.0.1:8787
+export SIMRACK_PROFILE=/opt/simrack/lab-profile.toml
+python3 -m simrack state          # read-only inventory
+python3 -m simrack recipes        # the built-in fabric blueprints
+python3 -m simrack serve          # http://127.0.0.1:8787
 ```
 
 Environment:
 
 | Variable | Meaning |
 |---|---|
-| `LABFRONT_PROFILE` | the lab profile; without it LabFront is read-only |
-| `LABFRONT_PVE_TOKEN` | `root@pam!labfront=<secret>` |
+| `SIMRACK_PROFILE` | the lab profile; without it SimRack is read-only |
+| `SIMRACK_PVE_TOKEN` | `root@pam!simrack=<secret>` |
 | `MIST_TOKEN` | a Mist API token with admin on the profile's org; without it every Mist action is disabled |
-| `LABFRONT_MIST_WRITES` | `1` to let the front end push fabric changes to Mist (needs a profile) |
-| `LABFRONT_ALLOW_WRITES` | `1` to allow changes (needs a profile); anything else, or unset, is read-only |
-| `LABFRONT_TOKEN` | bearer token; required if binding anything but 127.0.0.1 |
-| `LABFRONT_STATE_DIR` | where sandboxes, shapes and passwords are kept (default `/opt/labfront/state`) |
+| `SIMRACK_MIST_WRITES` | `1` to let the front end push fabric changes to Mist (needs a profile) |
+| `SIMRACK_ALLOW_WRITES` | `1` to allow changes (needs a profile); anything else, or unset, is read-only |
+| `SIMRACK_TOKEN` | bearer token; required if binding anything but 127.0.0.1 |
+| `SIMRACK_STATE_DIR` | where sandboxes, shapes and passwords are kept (default `/opt/simrack/state`) |
 
 The page follows the computer's light or dark setting. Day looks like the Mist
 portal: navy side list, white top bar, light content. The sun or moon at the end
@@ -180,7 +180,7 @@ them as saved files:
 | `GET /sites/<site>/stats/ports/search?limit=1000&duration=1d` | no | LLDP neighbours, for the exact cabling; without them ports are guessed from the port config |
 
 The page links all three for the first Mist site the profile protects, so a
-browser signed in to Mist can open and save them; LabFront needs no Mist token
+browser signed in to Mist can open and save them; SimRack needs no Mist token
 for this. Scripts can send the same thing as `POST /api/shapes` with
 `{"documents": [topology, devices, ports]}`. Importing again under the same name
 replaces the shape.
@@ -218,52 +218,52 @@ python3 -m unittest discover -s tests -t . -v
 
 ## Deploy
 
-LabFront lives at `/opt/labfront` on the Proxmox host and runs as the
-`labfront` systemd unit. Once per host, before the first deploy:
+SimRack lives at `/opt/simrack` on the Proxmox host and runs as the
+`simrack` systemd unit. Once per host, before the first deploy:
 
-1. Create a Proxmox API token: `pveum user token add root@pam labfront --privsep 0`.
+1. Create a Proxmox API token: `pveum user token add root@pam simrack --privsep 0`.
    It prints the secret once.
 2. Write the lab profile. Keep it as `lab-profile.toml` in the project root (git
    ignores it and the deploy copies it), or create
-   `/opt/labfront/lab-profile.toml` on the host.
-3. Create `/opt/labfront/labfront.env` on the host, mode 600. The service does
+   `/opt/simrack/lab-profile.toml` on the host.
+3. Create `/opt/simrack/simrack.env` on the host, mode 600. The service does
    not start without it:
 
    ```sh
-   LABFRONT_PROFILE=/opt/labfront/lab-profile.toml
-   LABFRONT_PVE_TOKEN=root@pam!labfront=<secret>
-   LABFRONT_ALLOW_WRITES=0
+   SIMRACK_PROFILE=/opt/simrack/lab-profile.toml
+   SIMRACK_PVE_TOKEN=root@pam!simrack=<secret>
+   SIMRACK_ALLOW_WRITES=0
    # MIST_TOKEN=<org admin token>
-   # LABFRONT_MIST_WRITES=0
+   # SIMRACK_MIST_WRITES=0
    ```
 
 4. Optional: to keep LACP open when someone starts a switch from the Proxmox
    GUI, put the hookscript on the template once, as root:
-   `qm set <template> --hookscript local:snippets/labfront-sbx.sh`. Every clone
+   `qm set <template> --hookscript local:snippets/simrack-sbx.sh`. Every clone
    copies it. The deploy copies the script to `/var/lib/vz/snippets/`, and the
-   `local` storage must allow the `snippets` content type. LabFront itself never
+   `local` storage must allow the `snippets` content type. SimRack itself never
    sets a hookscript: Proxmox lets only `root@pam` do that, not an API token.
 
 Then, for the first deploy and every update:
 
 ```bash
-LABFRONT_HOST=<ssh host> ./deploy/deploy.sh   # copies, runs the tests (a failure stops it), installs the unit, restarts, smoke tests
+SIMRACK_HOST=<ssh host> ./deploy/deploy.sh   # copies, runs the tests (a failure stops it), installs the unit, restarts, smoke tests
 ssh -N -L 8787:127.0.0.1:8787 <ssh host>      # then open http://127.0.0.1:8787
 ```
 
 `deploy.sh` does not back up the copy already on the host; take one first
-(`tar -czf /root/labfront.bak.tgz -C /opt labfront`). It ships **read-only**
-(`LABFRONT_ALLOW_WRITES=0`); flip that only when you are ready, and read
+(`tar -czf /root/simrack.bak.tgz -C /opt simrack`). It ships **read-only**
+(`SIMRACK_ALLOW_WRITES=0`); flip that only when you are ready, and read
 `ADVICE.md` first.
 
 ```bash
-systemctl status labfront
-systemctl edit labfront        # override the env if you want writes
+systemctl status simrack
+systemctl edit simrack        # override the env if you want writes
 ```
 
 ## Agent skill
 
-`skills/labfront/SKILL.md` is a short runbook for a coding agent: what to read
+`skills/simrack/SKILL.md` is a short runbook for a coding agent: what to read
 first, which calls change things (each marked `WRITE:`), and the traps. It uses
 the section layout of Casper's network skills, stays under 6 KiB and points at
 this README and `ADVICE.md` for detail, so keep the three in step. Install it by
@@ -271,8 +271,8 @@ copying the folder:
 
 ```bash
 mkdir -p ~/.casper/skills ~/.agents/skills
-cp -R skills/labfront ~/.casper/skills/    # Casper
-cp -R skills/labfront ~/.agents/skills/    # agents that read ~/.agents/skills
+cp -R skills/simrack ~/.casper/skills/    # Casper
+cp -R skills/simrack ~/.agents/skills/    # agents that read ~/.agents/skills
 ```
 
 ## Known gaps

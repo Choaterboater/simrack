@@ -140,7 +140,7 @@ def build_router(manager: SandboxManager) -> Router:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "labfront/1.0"
+    server_version = "simrack/1.0"
     router: Router
     token: str = ""
     write_lock = threading.Lock()
@@ -194,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if not self._known_host():
-            return self._send(403, {"error": "Unknown Host header refused.", "detail": "Open LabFront at http://127.0.0.1 or http://localhost."})
+            return self._send(403, {"error": "Unknown Host header refused.", "detail": "Open SimRack at http://127.0.0.1 or http://localhost."})
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
             return self._send(200, PAGE.encode(), "text/html; charset=utf-8")
@@ -209,11 +209,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._known_host():
             self._drain()
             self.close_connection = True
-            return self._send(403, {"error": "Unknown Host header refused.", "detail": "Open LabFront at http://127.0.0.1 or http://localhost."})
+            return self._send(403, {"error": "Unknown Host header refused.", "detail": "Open SimRack at http://127.0.0.1 or http://localhost."})
         if not self._authorised():
             return self._send(401, {"error": "Bad or missing bearer token."})
         if not self._same_origin():
-            return self._send(403, {"error": "Cross-origin or non-JSON request refused.", "detail": "POST with Content-Type: application/json from the LabFront page."})
+            return self._send(403, {"error": "Cross-origin or non-JSON request refused.", "detail": "POST with Content-Type: application/json from the SimRack page."})
         if self._too_big():
             return
         parsed = urlparse(self.path)
@@ -276,10 +276,10 @@ def serve(manager: SandboxManager, host: str, port: int, token: str = ""):
     if host not in ("127.0.0.1", "::1", "localhost") and not token:
         raise LabError(
             "Refusing to bind a write-capable API to a public address without a token.",
-            detail="Set LABFRONT_TOKEN, or bind 127.0.0.1 and use an SSH tunnel.",
+            detail="Set SIMRACK_TOKEN, or bind 127.0.0.1 and use an SSH tunnel.",
         )
     handler = type("BoundHandler", (Handler,), {"router": build_router(manager), "token": token, "write_lock": threading.Lock()})
     httpd = ThreadingHTTPServer((host, port), handler)
-    httpd.log = lambda message: print(f"[labfront] {message}", flush=True)
-    print(f"[labfront] listening on http://{host}:{port} (auth={'bearer' if token else 'none'})", flush=True)
+    httpd.log = lambda message: print(f"[simrack] {message}", flush=True)
+    print(f"[simrack] listening on http://{host}:{port} (auth={'bearer' if token else 'none'})", flush=True)
     return httpd

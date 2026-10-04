@@ -8,8 +8,8 @@ import os
 import re
 import tempfile
 
-from labfront.config import Settings
-from labfront.service import SandboxManager
+from simrack.config import Settings
+from simrack.service import SandboxManager
 
 
 class FakeProxmox:
@@ -89,7 +89,7 @@ class FakeProxmox:
     def _refuse_root_only(self, verb, path, fields):
         refused = [key for key in self.ROOT_ONLY if key in fields]
         if refused:
-            from labfront.errors import BackendError
+            from simrack.errors import BackendError
 
             raise BackendError(f"Proxmox API {verb} {path} failed (500).", detail=f"only root can set '{refused[0]}' config")
 
@@ -121,7 +121,7 @@ class FakeProxmox:
         return "UPID:x"
 
     def delete_vm(self, vmid, *, purge=True):
-        from labfront.errors import BackendError
+        from simrack.errors import BackendError
 
         self._log("delete_vm", vmid, purge=purge)
         if self.vms.get(int(vmid), {}).get("status") == "running":
@@ -243,7 +243,7 @@ class FakeMist:
 
     def _read(self):
         if self.fail_reads:
-            from labfront.errors import BackendError
+            from simrack.errors import BackendError
 
             raise BackendError("Cannot reach the Mist API.", detail="fake: fail_reads")
 
@@ -255,7 +255,7 @@ class FakeMist:
 
     def _guard(self, what):
         if not self.writes_enabled():
-            from labfront.errors import GuardrailViolation
+            from simrack.errors import GuardrailViolation
 
             raise GuardrailViolation("Mist writes are disabled.", detail=f"refused {what}")
 
@@ -294,7 +294,7 @@ class FakeMist:
         for topology in self.topologies.get(site_id, []):
             if topology.get("id") == topology_id:
                 return json.loads(json.dumps(topology))
-        from labfront.errors import BackendError
+        from simrack.errors import BackendError
 
         raise BackendError(f"Mist API GET /sites/{site_id}/evpn_topologies/{topology_id} failed (404).", status=404)
 
@@ -311,7 +311,7 @@ class FakeMist:
         self._guard("put_evpn_topology")
         self._log("put_evpn_topology", site_id, topology.get("name"), topology.get("id"))
         if self._refuses(topology):
-            from labfront.errors import BackendError
+            from simrack.errors import BackendError
 
             verb, path = ("PUT", f"/sites/{site_id}/evpn_topologies/{topology['id']}") if topology.get("id") else ("POST", f"/sites/{site_id}/evpn_topologies")
             raise BackendError(
@@ -326,7 +326,7 @@ class FakeMist:
                 if current.get("id") == stored["id"]:
                     existing[index] = stored
                     return json.loads(json.dumps(stored))
-            from labfront.errors import BackendError
+            from simrack.errors import BackendError
 
             raise BackendError(f"Mist API PUT /sites/{site_id}/evpn_topologies/{stored['id']} failed (404).", status=404)
         self._topologies_made += 1
@@ -339,7 +339,7 @@ class FakeMist:
         self._log("delete_evpn_topology", site_id, topology_id)
         existing = self.topologies.get(site_id, [])
         if not any(t.get("id") == topology_id for t in existing):
-            from labfront.errors import BackendError
+            from simrack.errors import BackendError
 
             raise BackendError(f"Mist API DELETE /sites/{site_id}/evpn_topologies/{topology_id} failed (404).", status=404)
         self.topologies[site_id] = [t for t in existing if t.get("id") != topology_id]
@@ -571,7 +571,7 @@ LAB_PROFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures
 
 def lab_settings(tmpdir: str, *, profile: str = LAB_PROFILE, **overrides) -> Settings:
     """Settings loaded the way the service loads them, from a lab profile, then overridden."""
-    settings = Settings.from_env({"LABFRONT_PROFILE": profile, "LABFRONT_STATE_DIR": tmpdir})
+    settings = Settings.from_env({"SIMRACK_PROFILE": profile, "SIMRACK_STATE_DIR": tmpdir})
     return dataclasses.replace(settings, **overrides)
 
 
@@ -593,7 +593,7 @@ def make_manager(tmpdir: str, *, proxmox=None, mist=None, **settings_kwargs) -> 
 
 class TempDir:
     def __enter__(self):
-        self.path = tempfile.mkdtemp(prefix="labfront-test-")
+        self.path = tempfile.mkdtemp(prefix="simrack-test-")
         return self.path
 
     def __exit__(self, *exc):

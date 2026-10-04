@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from labfront.errors import GuardrailViolation, LabError
+from simrack.errors import GuardrailViolation, LabError
 from tests.fakes import FakeProxmox, TempDir, make_manager
 
 
@@ -70,7 +70,7 @@ class TestBootImages(unittest.TestCase):
         self.assertFalse(self.px.called("create_vm"))
 
     def test_a_failed_import_leaves_no_half_built_guest(self):
-        from labfront.errors import BackendError
+        from simrack.errors import BackendError
 
         def failing_wait(upid, **_):
             raise BackendError("Proxmox task failed.", detail="import: no space")

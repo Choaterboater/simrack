@@ -1,6 +1,6 @@
 """The lab profile: one TOML file that says what is live on this host.
 
-LabFront never touches what the profile protects, and with no profile it stays
+SimRack never touches what the profile protects, and with no profile it stays
 read-only, because then it cannot tell what is live. A mistake in the file stops
 start-up and names the key: a typo in a protected list must never quietly leave
 something live unprotected. ``lab-profile.example.toml`` shows every key.
@@ -24,7 +24,7 @@ from .config import (
 )
 from .errors import LabError
 
-HINT = "Fix the lab profile and start LabFront again. lab-profile.example.toml shows every key."
+HINT = "Fix the lab profile and start SimRack again. lab-profile.example.toml shows every key."
 
 
 class ProfileError(LabError):
@@ -64,7 +64,7 @@ SCHEMA: dict[str, dict[str, tuple]] = {
     },
 }
 
-#: Keys LabFront no longer reads, and where each setting belongs now.
+#: Keys SimRack no longer reads, and where each setting belongs now.
 RETIRED = {
     "proxmox.hookscript": "Proxmox lets only root@pam set a hookscript, so it goes on the vJunos template "
     "once (qm set <template> --hookscript ...) and every clone copies it. Delete this line."

@@ -11,10 +11,10 @@ import unittest
 import urllib.error
 import urllib.request
 
-from labfront.api import serve
+from simrack.api import serve
 from tests.fakes import TempDir, make_manager
 
-STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "labfront", "static")
+STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "simrack", "static")
 JS = "text/javascript; charset=utf-8"
 ASSETS = (("/theme.js", JS), ("/app.css", "text/css; charset=utf-8"), ("/app.js", JS))
 
@@ -67,7 +67,7 @@ class TestUiFiles(unittest.TestCase):
         self.assertEqual(self._get("/api/state")[0], 401)
 
     def test_nothing_else_on_disk_is_served(self):
-        for path in ("/static/app.js", "/labfront/ui.py", "/app.js/../ui.py", "/app.js.map", "/%2e%2e/labfront.env", "/state/sandboxes.json"):
+        for path in ("/static/app.js", "/simrack/ui.py", "/app.js/../ui.py", "/app.js.map", "/%2e%2e/simrack.env", "/state/sandboxes.json"):
             status, kind, _ = self._get(path)
             self.assertEqual((status, kind), (401, "application/json"), path)
 

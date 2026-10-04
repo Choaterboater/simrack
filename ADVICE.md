@@ -1,6 +1,6 @@
 # ADVICE: running, tearing down, rebuilding and fixing a vJunos + Mist lab
 
-For anyone running LabFront on a Proxmox VE host with vJunos-switch guests and a
+For anyone running SimRack on a Proxmox VE host with vJunos-switch guests and a
 Juniper Mist org. It was learned on one real lab; names, numbers and addresses
 here are examples.
 
@@ -13,11 +13,11 @@ Everything in this document follows from that.
 
 | Step | Why | Effort |
 |---|---|---|
-| 1. Write the lab profile | LabFront refuses anything it lists, and changes nothing without it. | 30 min |
+| 1. Write the lab profile | SimRack refuses anything it lists, and changes nothing without it. | 30 min |
 | 2. Make a clean vJunos **template** in the sandbox range (320 by default) | Every sandbox clones from it. Never clone a booted vJunos. | 1 session |
 | 3. Prove two clones get **different serials** | Mist keys on serial. If they collide, the whole plan stops here. | 30 min, do it before anything else |
-| 4. Create the Proxmox API token for LabFront | Without it LabFront cannot create guests. | 10 min |
-| 5. Run LabFront read-only first | Confirm the page lists your live lab as protected. | 10 min |
+| 4. Create the Proxmox API token for SimRack | Without it SimRack cannot create guests. | 10 min |
+| 5. Run SimRack read-only first | Confirm the page lists your live lab as protected. | 10 min |
 | 6. One sandbox, `single-switch` recipe | Cheapest proof (~5 GB). | 30 min |
 | 7. `collapsed-core`, then `ip-clos` | The real thing. | 1 hour |
 | 8. Mist site per sandbox + revert button | The part people actually break. | 1 hour |
@@ -55,16 +55,16 @@ and MACs to disk on first boot, and every clone would copy them. Instead:
 2. Import the vJunos-switch qcow2 as its disk
    (`qm disk import 320 vJunos-switch-<version>.qcow2 <storage>`), attach it as
    virtio0 and make it the boot disk.
-3. It needs no NICs of its own: LabFront gives every clone fxp0 (net0) on the
+3. It needs no NICs of its own: SimRack gives every clone fxp0 (net0) on the
    profile's management network and all its switch ports.
 4. Optional, for starts from the Proxmox GUI:
-   `qm set 320 --hookscript local:snippets/labfront-sbx.sh`. LabFront opens
+   `qm set 320 --hookscript local:snippets/simrack-sbx.sh`. SimRack opens
    LACP itself after every start it makes; a GUI start needs the hookscript.
 5. `qm template 320`, without starting it first. Each clone then has its own
    first boot, and Adopt sets its root password.
 
 Do this as root on the host. Proxmox lets only `root@pam` set `args` and
-`hookscript`, so LabFront's API token never sets them; every clone copies them
+`hookscript`, so SimRack's API token never sets them; every clone copies them
 from the template, and gets a fresh `smbios1` uuid.
 
 ### Step 3 in detail: the serial question
@@ -121,7 +121,7 @@ Two different meanings, two different answers.
 ### Redo a *sandbox* (the common case)
 Tear it down and build it again from the same recipe. The recipe is the source
 of truth: subnets, VLANs, VRF, overlay AS and the cabling are all recorded in
-`labfront/recipes.py`, so a rebuild is deterministic. Fresh vmids, fresh Mist
+`simrack/recipes.py`, so a rebuild is deterministic. Fresh vmids, fresh Mist
 site, no leftovers.
 
 ### Redo the *live lab* (rare, do it deliberately)
@@ -129,7 +129,7 @@ You need two independent restore paths, and you should know both:
 
 1. **Mist side:** before anything risky, save the live site's setting, its EVPN
    topology and every switch's device config. These are the same three things
-   **Snapshot Mist** saves for a sandbox; LabFront does it for sandboxes only.
+   **Snapshot Mist** saves for a sandbox; SimRack does it for sandboxes only.
    Mist also rolls a switch back by itself when a push cuts the switch off from
    the cloud. That does not cover a push that keeps the switch connected but
    breaks the fabric.
@@ -145,7 +145,7 @@ Order matters: roll back the guests first, then push the Mist config, then verif
 
 | Symptom | Likely cause | Action |
 |---|---|---|
-| Fabric-wide overlay BGP flaps every ~90 s | A fabric bridge is MTU 1500 | `ip link show <bridge>`: every fabric bridge must be MTU 9216. New bridges from LabFront are 9216 by default. |
+| Fabric-wide overlay BGP flaps every ~90 s | A fabric bridge is MTU 1500 | `ip link show <bridge>`: every fabric bridge must be MTU 9216. New bridges from SimRack are 9216 by default. |
 | One border's BFD stuck Init, TTL 254 | A VLAN in the EVPN overlay hairpinning back to the other border | An L2 loop. One link, one bridge, never a shared transit VLAN. |
 | Billions of packets out of a router's tap, millions of input errors | L2 loop on the transit bridge | `bridge fdb show br <bridge>`: two border MACs on one port means a loop. |
 | Windows client NAKs a DHCP lease | The relay's loopback (giaddr) matches no scope | Add a scope for the loopback subnet, with every address excluded. |
@@ -153,16 +153,16 @@ Order matters: roll back the guests first, then push the Mist config, then verif
 | Mist pushed WAN Edge config and broke OSPF | Config management was enabled on a device with an empty template | Keep config management **off** for a vSRX run from the CLI. Mist WAN Edge does not fit a CLI OSPF/BGP design. |
 | GBP tags render, counters stay 0 | vJunos does not enforce VXLAN GBP (the feature is unlicensed on vJunos) | Not a bug. Use a physical EX for a real GBP demo. |
 | A sandbox switch will not join the site | Serial collision, or it was never adopted | Compare serials on every clone (step 3 above), then click **Adopt again** in the sandbox's Join Mist checklist. |
-| Page says "no lab profile is loaded" | `LABFRONT_PROFILE` is unset | Set it in `labfront.env` and restart. |
-| Start-up fails naming a profile key | A mistake in the profile | Fix that key. LabFront will not start on a profile it cannot trust. |
+| Page says "no lab profile is loaded" | `SIMRACK_PROFILE` is unset | Set it in `simrack.env` and restart. |
+| Start-up fails naming a profile key | A mistake in the profile | Fix that key. SimRack will not start on a profile it cannot trust. |
 | Every Proxmox call fails with HTTP 596 "certificate verify failed" | The profile's node name has the wrong case | Copy the name from `pvesh get /nodes`. See section 7. |
 | Proxmox calls fail with "certificate verify failed", and the node name is right | `[proxmox] api` names an address other than the host itself, and its certificate is self-signed | Leave `api` at its default, `https://127.0.0.1:8006/api2/json`. |
 | Mist calls fail with "certificate verify failed" | The network inspects TLS | Add the inspecting CA to the host's trust store (`/usr/local/share/ca-certificates/`, then `update-ca-certificates`). Test with `curl -sS https://api.mist.com/api/v1/`, without `-k`. |
 | Build refused: "vmid … is not a template" | The clone source is a plain VM | Make a clean template (step 2). Never template a booted vJunos. |
-| LACP down on a switch started from the Proxmox GUI | A start gives the guest new taps, and the template has no hookscript | Start it from LabFront, or add the hookscript to the template (step 2). |
+| LACP down on a switch started from the Proxmox GUI | A start gives the guest new taps, and the template has no hookscript | Start it from SimRack, or add the hookscript to the template (step 2). |
 | Build fabric refused: "overlaps the protected subnet" | A sandbox range overlaps a subnet the profile protects | The sandbox ranges are fixed (see README.md); free them in the live lab, or build the fabric elsewhere. |
 | "The management pool … is full" | Every pool address is planned for a switch | Tear down a sandbox, or widen `[management] pool`. |
-| Front end says "Mist writes are disabled" | `LABFRONT_MIST_WRITES` is not 1, or no profile is loaded | Expected. Take a snapshot, then set it. |
+| Front end says "Mist writes are disabled" | `SIMRACK_MIST_WRITES` is not 1, or no profile is loaded | Expected. Take a snapshot, then set it. |
 | Front end says "Not enough free memory" | Under the 6 GB reserve after the build | Stop a sandbox switch, or build the `single-switch` recipe. Do not balloon vJunos. |
 
 ### The health check after any change
@@ -223,7 +223,7 @@ border router means the border path is broken, not Mist.
   127.0.0.1 by default; use an SSH tunnel, not a public bind.
 - The Proxmox API token is a **root** token with `privsep=0`, so it carries full
   root privileges. That matches the fact that the service runs as root (it needs
-  the serial console), but a dedicated `labfront@pve` user with a custom role
+  the serial console), but a dedicated `simrack@pve` user with a custom role
   limited to the sandbox range plus network modify is the correct hardening. Not
   done yet.
 
@@ -238,11 +238,11 @@ from `pvesh get /nodes`.
 **2. Bridges in sourced files are invisible to the PVE network API.** Bridges
 defined in a file under `/etc/network/interfaces.d/` are not read by PVE, so
 `GET /nodes/<node>/network` never lists them, and the only thing stopping
-LabFront from creating a bridge with the same name is the profile's
+SimRack from creating a bridge with the same name is the profile's
 `[protected] bridges`. List every live bridge there, and add new ones as the
 lab grows.
 
-LabFront therefore never uses the PVE network API for bridges: applying it ends
+SimRack therefore never uses the PVE network API for bridges: applying it ends
 in an `ifreload` that rewrites `/etc/network/interfaces`. Sandbox bridges are made
 with `ip link` instead and are never written to any file.
 

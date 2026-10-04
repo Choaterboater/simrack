@@ -11,10 +11,10 @@ import tempfile
 import textwrap
 import unittest
 
-from labfront.config import Settings
-from labfront.errors import GuardrailViolation
-from labfront.guardrails import Guardrails
-from labfront.service import SandboxManager
+from simrack.config import Settings
+from simrack.errors import GuardrailViolation
+from simrack.guardrails import Guardrails
+from simrack.service import SandboxManager
 from tests.fakes import FakeMist, FakeProxmox, TempDir
 
 SITE_A = "00000000-0000-0000-0000-00000000000a"
@@ -45,7 +45,7 @@ def profile_settings(tmp: str, text: str = LAB, **environ) -> Settings:
     path = os.path.join(tmp, "lab-profile.toml")
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(textwrap.dedent(text))
-    return Settings.from_env({"LABFRONT_PROFILE": path, "LABFRONT_STATE_DIR": tmp, **environ})
+    return Settings.from_env({"SIMRACK_PROFILE": path, "SIMRACK_STATE_DIR": tmp, **environ})
 
 
 class TestGuardsFollowTheProfile(unittest.TestCase):
@@ -92,7 +92,7 @@ pool = "192.0.2.200-192.0.2.249"
 subnets = ["{subnet}"]
 """
 
-WRITES = {"LABFRONT_ALLOW_WRITES": "1", "LABFRONT_MIST_WRITES": "1", "MIST_TOKEN": "t", "LABFRONT_PVE_TOKEN": "p"}
+WRITES = {"SIMRACK_ALLOW_WRITES": "1", "SIMRACK_MIST_WRITES": "1", "MIST_TOKEN": "t", "SIMRACK_PVE_TOKEN": "p"}
 
 
 class TestSandboxSubnetsStayOffTheProfile(unittest.TestCase):

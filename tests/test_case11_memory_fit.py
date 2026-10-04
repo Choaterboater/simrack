@@ -11,13 +11,13 @@ from __future__ import annotations
 import os
 import unittest
 
-from labfront.config import Settings
-from labfront.errors import GuardrailViolation
-from labfront.proxmox import ProxmoxClient
+from simrack.config import Settings
+from simrack.errors import GuardrailViolation
+from simrack.proxmox import ProxmoxClient
 from tests.fakes import FakeProxmox, TempDir, make_manager
 
 MIB = 1024 * 1024
-STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "labfront", "static")
+STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "simrack", "static")
 
 
 class StubProxmox(ProxmoxClient):

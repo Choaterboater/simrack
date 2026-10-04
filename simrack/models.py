@@ -46,7 +46,7 @@ class Node:
     mgmt_ip: str | None = None
     #: the Mist pod a shape put this switch in, if any
     pod: str | None = None
-    #: when LabFront last adopted this switch into the sandbox's Mist site
+    #: when SimRack last adopted this switch into the sandbox's Mist site
     adopted_at: str | None = None
 
     def __post_init__(self) -> None:

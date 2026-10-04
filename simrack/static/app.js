@@ -9,7 +9,7 @@ let S = null;                                   // last /api/state
 let sel = localStorage.getItem("lf_sel") || ""; // selected sandbox
 let focusItem = null;                           // {t:"node",id} | {t:"cable",id}
 let busy = false, creating = false, armedAt = 0, authNeeded = false;
-let token = localStorage.getItem("labfront_token") || "";
+let token = localStorage.getItem("simrack_token") || "";
 const log = [];
 const consoleOut = {};
 let moveFrom = {};                              // {bridge,node}: which end the move form is moving
@@ -99,7 +99,7 @@ function setWriteDisabled() {
     if (b.getAttribute("aria-busy") === "true") continue;
     const why = b.hasAttribute("data-write") && !writesOn() ? ((S && S.read_only_reason) || "Read-only")
       : (b.hasAttribute("data-mist-write") || b.hasAttribute("data-mist-read")) && !mistOn ? "No Mist token (MIST_TOKEN)"
-      : b.hasAttribute("data-mist-write") && !mistWritesOn() ? "Mist writes are off (LABFRONT_MIST_WRITES)"
+      : b.hasAttribute("data-mist-write") && !mistWritesOn() ? "Mist writes are off (SIMRACK_MIST_WRITES)"
       : b.dataset.why || (busy ? "Another action is running" : "");
     b.disabled = !!why;
     b.title = why || b.dataset.tip || "";
@@ -199,7 +199,7 @@ function moveTargets(s, l, from) {
 function renderTop() {
   $("#conn").className = "conn on";
   $("#node").textContent = S.host.node;
-  document.title = `LabFront · ${S.host.node}`;
+  document.title = `SimRack · ${S.host.node}`;
   const free = S.host.free_ram_mb, total = S.host.total_ram_mb;
   if (free != null) {
     const head = headroomMb(), per = switchMb();
@@ -228,11 +228,11 @@ function renderBanner(err) {
     if ($('[data-form="token"]', b)) return;
     b.className = "banner err"; b.hidden = false;
     b._html = "";
-    b.innerHTML = `This LabFront needs a bearer token.
-      <form class="actions" data-form="token"><input name="token" type="password" placeholder="LABFRONT_TOKEN" autocomplete="off"><button class="sm" type="submit">Save token</button></form>`;
+    b.innerHTML = `This SimRack needs a bearer token.
+      <form class="actions" data-form="token"><input name="token" type="password" placeholder="SIMRACK_TOKEN" autocomplete="off"><button class="sm" type="submit">Save token</button></form>`;
     return;
   }
-  if (err) { b.className = "banner err"; b.hidden = false; b.textContent = "Cannot reach the LabFront API: " + err; return; }
+  if (err) { b.className = "banner err"; b.hidden = false; b.textContent = "Cannot reach the SimRack API: " + err; return; }
   if (S && S.host.inventory_error) { b.className = "banner err"; b.hidden = false; b.textContent = "Proxmox inventory failed: " + S.host.inventory_error; return; }
   if (S && !S.writes_enabled) {
     b.className = "banner"; b.hidden = false;
@@ -307,7 +307,7 @@ function importShell() {
   return `<div class="intake">
     <header class="intake-head">
       <h1 tabindex="-1">Import a fabric from Mist</h1>
-      <p>Give LabFront an EVPN topology from Mist and it drafts a sandbox with the same switches and cabling. You see what a copy would take, then build it. Importing builds nothing and sends nothing to Mist.</p>
+      <p>Give SimRack an EVPN topology from Mist and it drafts a sandbox with the same switches and cabling. You see what a copy would take, then build it. Importing builds nothing and sends nothing to Mist.</p>
     </header>
     <div class="intake-grid">
       <section aria-labelledby="sec-bring">
@@ -480,7 +480,7 @@ function shapeShell(sh) {
       <section aria-labelledby="sec-src"><h2 class="sec" id="sec-src">From Mist</h2><div id="srcfacts"></div></section>
       <section aria-labelledby="sec-notes"><h2 class="sec" id="sec-notes">Notes <small id="notecount"></small></h2><div id="notes"></div></section>
       <div class="forget">
-        <p class="note">Deleting forgets LabFront's copy of this plan. Mist is not touched, and you can import it again.</p>
+        <p class="note">Deleting forgets SimRack's copy of this plan. Mist is not touched, and you can import it again.</p>
         <div class="form-err" id="shapemsg" role="alert" hidden></div>
         <button class="danger" data-act="del-shape" data-name="${esc(sh.name)}" data-confirm="Delete this shape?" data-busy-label="Deleting…">Delete shape</button>
       </div>
@@ -540,7 +540,7 @@ function updateShape(sh) {
   if (f.mist.disabled === can) { f.mist.disabled = !can; f.mist.checked = can; }
   const mw = $("[data-mist-why]", f);
   mw.textContent = can || !writesOn() ? "" : !S.mist.configured ? "No Mist token (MIST_TOKEN), so the sandbox starts without a site."
-    : "Mist writes are off (LABFRONT_MIST_WRITES), so the sandbox starts without a site.";
+    : "Mist writes are off (SIMRACK_MIST_WRITES), so the sandbox starts without a site.";
   mw.hidden = !mw.textContent;
   const b = $("[data-build]", f);
   b.dataset.why = !k ? "Tick at least one switch" : short ? `Not enough memory: ${gb(short)} short` : "";
@@ -735,7 +735,7 @@ function syncTeardown() {
 /* ---------- Join Mist ---------- */
 const siteName = s => s.mist_site_name || s.name + "-site";
 const planned = n => n.kind === "switch" && n.mgmt_ip && !n.adopted_at
-  ? ` <span class="planned" title="Planned. The switch takes its fxp0 address from DHCP; LabFront learns it when the switch is adopted.">planned</span>` : "";
+  ? ` <span class="planned" title="Planned. The switch takes its fxp0 address from DHCP; SimRack learns it when the switch is adopted.">planned</span>` : "";
 function adoptBtn(s, n, sm) {
   const why = !s.mist_site_id ? "Create the sandbox's Mist site first" : !n.running ? "Start the switch first" : "";
   const cls = sm ? "sm" : !why && !n.adopted_at ? "primary" : "";
@@ -783,7 +783,7 @@ function joinSteps(s, sws) {
   const built = s.fabric_built_at, ready = site && all;
   const undo = Object.keys(s.mist_snapshots || {}).filter(l => l.startsWith("before-fabric-")).pop();
   h += `${li(!!built, ready && !built)}<h3>Build the fabric in Mist</h3>
-    <p class="hint">Makes the sandbox's Mist site match the cables: its networks and VRF, every switch managed by Mist, and an EVPN topology with a fabric port at both ends of each cable. LabFront saves a Mist revert point first.</p>
+    <p class="hint">Makes the sandbox's Mist site match the cables: its networks and VRF, every switch managed by Mist, and an EVPN topology with a fabric port at both ends of each cable. SimRack saves a Mist revert point first.</p>
     <dl class="facts">${fabricFacts(s).map(([k, v]) => `<div><dt>${k}</dt><dd${/AS/.test(k) ? ` class="mono"` : ""}>${esc(v)}</dd></div>`).join("")}</dl>
     <div class="scroll-y"><table><thead><tr><th>Switch</th><th class="role">Role</th><th class="pod">PoD</th><th>Fabric ports</th></tr></thead><tbody>${fabricRows(s).map(x => `<tr>
       <td class="nm"><b>${esc(x.n.name)}</b></td><td class="role muted">${esc(x.n.role)}</td><td class="pod muted">${esc(x.n.pod || "–")}</td>
@@ -1289,7 +1289,7 @@ document.addEventListener("submit", e => {
   if (btn && btn.dataset.confirm && !confirmed(btn)) return;
   const v = name => (f.elements[name] ? f.elements[name].value.trim() : "");
   switch (kind) {
-    case "token": token = v("token"); localStorage.setItem("labfront_token", token); authNeeded = false; refresh(true); break;
+    case "token": token = v("token"); localStorage.setItem("simrack_token", token); authNeeded = false; refresh(true); break;
     case "import": importShape(f, btn); break;
     case "create": {
       const body = { name: v("name"), recipe: v("recipe"), start: f.start.checked, with_mist_site: f.mist.checked, ...bootBody(v("boot")) };

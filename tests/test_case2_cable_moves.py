@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from labfront.errors import GuardrailViolation, NotFound
+from simrack.errors import GuardrailViolation, NotFound
 from tests.fakes import TempDir, make_manager
 
 

@@ -14,10 +14,10 @@ import urllib.error
 import urllib.parse
 from unittest import mock
 
-from labfront.config import Settings
-from labfront.errors import BackendError, GuardrailViolation
-from labfront.mist import MistClient
-from labfront.proxmox import ProxmoxClient
+from simrack.config import Settings
+from simrack.errors import BackendError, GuardrailViolation
+from simrack.mist import MistClient
+from simrack.proxmox import ProxmoxClient
 from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
 
 
@@ -120,7 +120,7 @@ class TestTokenSafeBuild(unittest.TestCase):
         for node in (sandbox.nodes[0], client):
             self.assertIn(node.vmid, self.px.vms)
 
-    def test_cabled_ports_pass_lacp_again_after_labfront_starts_a_switch(self):
+    def test_cabled_ports_pass_lacp_again_after_simrack_starts_a_switch(self):
         sandbox = self.manager.create_sandbox("lacp", "collapsed-core", template_vmid=320)
         link = sandbox.links[0]
         node = sandbox.node(link.a_node)
@@ -133,7 +133,7 @@ class TestTokenSafeBuild(unittest.TestCase):
                 self.px.qmeventd()  # a moment later: PVE restarts a guest whose reboot task ended
                 self.assertEqual(result["status"], "running")
                 self.assertTrue(self.manager.get("lacp").node(node.name).running)
-                self.assertTrue(self.px.passes_lacp(node.vmid, net), "a start gives the switch new taps; LabFront opens LACP again")
+                self.assertTrue(self.px.passes_lacp(node.vmid, net), "a start gives the switch new taps; SimRack opens LACP again")
         with self.subTest(steps="revert"):
             self.manager.snapshot(sandbox, "base")
             self.manager.revert(sandbox, "base")
@@ -152,7 +152,7 @@ class TestTokenSafeBuild(unittest.TestCase):
 
 
 class TestCloneOwnership(unittest.TestCase):
-    """LabFront deletes only guests it made. A vmid is LabFront's once Proxmox
+    """SimRack deletes only guests it made. A vmid is SimRack's once Proxmox
     accepts the create or clone: PVE takes the new id before it answers."""
 
     def setUp(self):
@@ -167,13 +167,13 @@ class TestCloneOwnership(unittest.TestCase):
 
     def test_a_clone_that_loses_its_vmid_to_another_guest_leaves_that_guest_alone(self):
         def lost_race(source_vmid, new_vmid, **_):
-            self.px.vms[int(new_vmid)] = {"vmid": int(new_vmid), "name": "not-labfronts", "status": "running"}
+            self.px.vms[int(new_vmid)] = {"vmid": int(new_vmid), "name": "not-simracks", "status": "running"}
             raise BackendError(f"Proxmox API POST /qemu/{source_vmid}/clone failed (500).", detail=f"VM {new_vmid} already exists")
 
         self.px.clone_vm = lost_race
         with self.assertRaises(BackendError):
             self.manager.provision_node(self.sandbox, "sbx-acc-02", template_vmid=320)
-        self.assertIn("not-labfronts", [vm.get("name") for vm in self.px.vms.values()])
+        self.assertIn("not-simracks", [vm.get("name") for vm in self.px.vms.values()])
 
     def test_no_vmid_is_picked_while_proxmox_cannot_list_its_guests(self):
         self.px.list_vms = mock.Mock(side_effect=BackendError("Cannot reach the Proxmox API."))
@@ -197,7 +197,7 @@ class TestCloneSource(unittest.TestCase):
 
 
 class TestMistSnapshotSecrets(unittest.TestCase):
-    """A Mist snapshot is readable only by LabFront's own user, never holds a
+    """A Mist snapshot is readable only by SimRack's own user, never holds a
     password, and goes when its sandbox goes."""
 
     def setUp(self):

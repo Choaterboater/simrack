@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from labfront.errors import GuardrailViolation
+from simrack.errors import GuardrailViolation
 from tests.fakes import FakeProxmox, TempDir, make_manager
 
 

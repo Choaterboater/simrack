@@ -38,7 +38,7 @@ class MistClient:
                 raise GuardrailViolation("Mist writes are off: no lab profile is loaded.", detail=NO_PROFILE)
             raise GuardrailViolation(
                 "Mist writes are disabled.",
-                detail="Set LABFRONT_MIST_WRITES=1 to let the front end push fabric changes. "
+                detail="Set SIMRACK_MIST_WRITES=1 to let the front end push fabric changes. "
                 "Take a snapshot first: the revert button needs one.",
             )
         url = f"{self.base}{path}"

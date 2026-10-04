@@ -1,4 +1,4 @@
-"""Entry point: python3 -m labfront serve"""
+"""Entry point: python3 -m simrack serve"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .service import SandboxManager
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="labfront", description="Sandbox front end for a vJunos + Mist lab on Proxmox")
+    parser = argparse.ArgumentParser(prog="simrack", description="Sandbox front end for a vJunos + Mist lab on Proxmox")
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("serve", help="run the web front end")
@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = Settings.from_env()
     except ProfileError as error:
-        print(f"labfront: {error.message}\n{error.detail}", file=sys.stderr)
+        print(f"simrack: {error.message}\n{error.detail}", file=sys.stderr)
         return 2
 
     if args.command == "recipes":
@@ -47,12 +47,12 @@ def main(argv: list[str] | None = None) -> int:
     host = args.host or settings.bind_host
     port = args.port or settings.bind_port
     if host not in ("127.0.0.1", "::1", "localhost") and not settings.extras.get("token"):
-        print("refusing to bind publicly without a token; set LABFRONT_TOKEN", file=sys.stderr)
+        print("refusing to bind publicly without a token; set SIMRACK_TOKEN", file=sys.stderr)
         return 2
     if settings.allow_writes:
         restored = manager.ensure_bridges()
         if restored:
-            print(f"[labfront] re-created sandbox bridges: {', '.join(restored)}", flush=True)
+            print(f"[simrack] re-created sandbox bridges: {', '.join(restored)}", flush=True)
     httpd = serve(manager, host, port, token=settings.extras.get("token", ""))
     try:
         httpd.serve_forever()

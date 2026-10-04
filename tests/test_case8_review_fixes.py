@@ -14,11 +14,11 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
-from labfront.api import serve
-from labfront.config import Settings
-from labfront.errors import BackendError, GuardrailViolation
-from labfront.mist import MistClient
-from labfront.proxmox import ProxmoxClient
+from simrack.api import serve
+from simrack.config import Settings
+from simrack.errors import BackendError, GuardrailViolation
+from simrack.mist import MistClient
+from simrack.proxmox import ProxmoxClient
 from tests.fakes import FakeProxmox, TempDir, make_manager
 
 
@@ -120,7 +120,7 @@ class TestMistAndSettings(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(Settings.from_env().allow_writes)
         example = os.path.join(os.path.dirname(__file__), os.pardir, "lab-profile.example.toml")
-        with mock.patch.dict(os.environ, {"LABFRONT_PROFILE": example, "LABFRONT_ALLOW_WRITES": "1", "LABFRONT_TOKEN": "abc"}, clear=True):
+        with mock.patch.dict(os.environ, {"SIMRACK_PROFILE": example, "SIMRACK_ALLOW_WRITES": "1", "SIMRACK_TOKEN": "abc"}, clear=True):
             settings = Settings.from_env()
             self.assertTrue(settings.allow_writes)
             self.assertEqual(settings.extras["token"], "abc")
