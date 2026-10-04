@@ -638,12 +638,18 @@ class TestSerialConsole(unittest.TestCase):
             with conn:
                 if close_at_once:
                     return
-                conn.sendall(b"login: ")
+                # The client may hang up without reading the banner. The write
+                # then fails, or the stream ends in a reset instead of EOF, but
+                # everything the client sent is already queued, so keep reading.
+                try:
+                    conn.sendall(b"login: ")
+                except BrokenPipeError:
+                    pass
                 conn.settimeout(2)
                 while True:
                     try:
                         data = conn.recv(4096)
-                    except socket.timeout:
+                    except (socket.timeout, ConnectionResetError):
                         break
                     if not data:
                         break

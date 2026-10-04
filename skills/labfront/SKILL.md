@@ -70,7 +70,6 @@ More symptoms and fixes: ADVICE, section 4.
 - From the checkout, `python3 -m unittest discover -s tests -t .` runs everything against fakes (`tests/fakes.py`) and `tests/fixtures/lab-profile.toml`: no host, no tokens.
 - New behaviour gets a failing test first, at an existing seam: profile, write refusal, guardrails, management pool, hygiene.
 - Sample data uses placeholders only: UUIDs starting `00000000-0000-0000-0000-000000` and MACs starting `02:00:00`. Test 14 fails on anything else.
-- Test 12's paced-chunks case fails about 1 run in 40 (a race in the fake console); rerun once before chasing it.
 
 ## Public docs
 - https://pve.proxmox.com/pve-docs/api-viewer/
