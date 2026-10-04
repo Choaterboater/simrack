@@ -47,7 +47,12 @@ class TestBootImages(unittest.TestCase):
         create = self.px.called("create_vm")[0][2]
         self.assertEqual(create["import_from"], "local:import/vJunos-switch-26.2R1.7.qcow2")
         self.assertEqual(create["disk_bus"], "virtio0", "match the live switches: SeaBIOS + virtio0")
-        self.assertEqual(create["hookscript"], "local:snippets/labfront-sbx.sh")
+        self.assertEqual(
+            (create.get("smbios_product"), create.get("cpu")),
+            ("VM-VEX", "host"),
+            "vJunos-switch checks the SMBIOS product and needs the host CPU for nested KVM",
+        )
+        self.assertNotIn("hookscript", create, "an API token cannot set a hookscript")
         waits = self.px.called("wait_task")
         self.assertTrue(waits, "the import is asynchronous; the guest is locked until it ends")
         self.assertIn(node.vmid, self.px.vms)

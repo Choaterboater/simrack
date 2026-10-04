@@ -58,9 +58,6 @@ DEFAULT_PVE_API = "https://127.0.0.1:8006/api2/json"
 #: case sensitive, and the wrong case gets HTTP 596 from pveproxy.
 DEFAULT_PVE_NODE = socket.gethostname().split(".")[0]
 
-#: Hookscript for sandbox guests: lets LLDP and LACP through on sandbox bridges.
-SANDBOX_HOOKSCRIPT = "local:snippets/labfront-sbx.sh"
-
 #: Boot sources a sandbox node may use: an installer ISO or a disk image in a
 #: storage's import area. Existing guest disks (vm-NNN-disk-*) are never allowed.
 IMAGE_PATTERNS = {
@@ -105,7 +102,6 @@ class Settings:
     sandbox_lxc_start: int = SANDBOX_LXC_START
     sandbox_lxc_end: int = SANDBOX_LXC_END
     sandbox_bridge_prefix: str = SANDBOX_BRIDGE_PREFIX
-    sandbox_hookscript: str = SANDBOX_HOOKSCRIPT
     fabric_mtu: int = FABRIC_MTU
     min_free_ram_mb: int = MIN_FREE_RAM_MB
     mgmt_bridge: str = MGMT_BRIDGE

@@ -396,7 +396,7 @@ class Built(Base):
     def topology(self):
         topologies = self.mist.evpn_topologies(self.site)
         self.assertEqual(len(topologies), 1)
-        return topologies[0]
+        return self.mist.evpn_topology(self.site, topologies[0]["id"])
 
     def writes(self):
         return [c for c in self.mist.calls if c[0].startswith(("put_", "create_", "delete_"))]
@@ -552,7 +552,7 @@ class TestBuildFabric(Built):
         macs = {d["name"]: d["mac"] for d in self.mist.devices(sandbox.mist_site_id)}
         result = self.manager.mist_build_fabric(sandbox)
         self.assertEqual(result["form"], "detailed")
-        topology = self.mist.evpn_topologies(sandbox.mist_site_id)[0]
+        topology = self.mist.evpn_topology(sandbox.mist_site_id, result["topology_id"])
         switches = by_mac(topology)
         self.assertEqual(switches[macs["sbx-core-01"]]["downlinks"], [macs["sbx-acc-01"]])
         self.assertEqual(switches[macs["sbx-acc-01"]]["uplinks"], [macs["sbx-core-01"]])

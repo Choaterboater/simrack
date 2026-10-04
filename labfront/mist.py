@@ -22,7 +22,7 @@ class MistClient:
         self.base = self.settings.mist_api_base.rstrip("/")
         self.token = self.settings.mist_token
         self.org_id = self.settings.org_id
-        self._ssl = ssl._create_unverified_context()
+        self._ssl = ssl.create_default_context()
 
     # -- transport --------------------------------------------------------------
 
@@ -55,7 +55,13 @@ class MistClient:
             raw = error.read().decode("utf-8", "replace")
             raise BackendError(f"Mist API {method} {path} failed ({error.code}).", detail=raw[:500], status=error.code) from error
         except urllib.error.URLError as error:
-            raise BackendError("Cannot reach the Mist API.", detail=str(error.reason)) from error
+            detail = str(error.reason)
+            if isinstance(error.reason, ssl.SSLCertVerificationError):
+                detail += (
+                    ". If this network inspects TLS, add its root CA to the host's trust store "
+                    "(copy it to /usr/local/share/ca-certificates/ and run update-ca-certificates)."
+                )
+            raise BackendError("Cannot reach the Mist API.", detail=detail) from error
         if not body:
             return None
         try:
@@ -102,6 +108,9 @@ class MistClient:
         topology_id = topology.get("id")
         path = f"/sites/{site_id}/evpn_topologies/{topology_id}" if topology_id else f"/sites/{site_id}/evpn_topologies"
         return self._request("PUT" if topology_id else "POST", path, topology, write=True) or {}
+
+    def delete_evpn_topology(self, site_id: str, topology_id: str) -> None:
+        self._request("DELETE", f"/sites/{site_id}/evpn_topologies/{topology_id}", write=True)
 
     def devices(self, site_id: str, device_type: str = "switch") -> list[dict]:
         query = urllib.parse.urlencode({"type": device_type})

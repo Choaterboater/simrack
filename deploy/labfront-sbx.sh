@@ -1,5 +1,8 @@
 #!/bin/bash
-# Proxmox hookscript for LabFront sandbox guests (local:snippets/labfront-sbx.sh).
+# Optional Proxmox hookscript for LabFront sandbox guests (local:snippets/labfront-sbx.sh).
+# LabFront opens LACP itself after every start it makes. Set this on the vJunos
+# template once, as root (qm set <template> --hookscript local:snippets/labfront-sbx.sh),
+# so starts from the Proxmox GUI keep it too; every clone copies it.
 # Lets LLDP and LACP cross the sandbox cable bridges (sbx*). Any other bridge,
 # the live lab's included, is left alone. If the lab profile changes
 # [sandbox] bridge_prefix, change the sbx* pattern below to match.

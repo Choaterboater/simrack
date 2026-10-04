@@ -91,7 +91,7 @@ class TestProxmoxClient(unittest.TestCase):
 
     def test_create_vm_matches_the_live_switch_shape(self):
         client = RecordingProxmox()
-        client.create_vm(321, "sbx-acc-01", memory_mb=5120, cores=4, import_from="local:import/vj.qcow2", hookscript="local:snippets/labfront-sbx.sh")
+        client.create_vm(321, "sbx-acc-01", memory_mb=5120, cores=4, import_from="local:import/vj.qcow2", smbios_product="VM-VEX", cpu="host")
         params = client.sent[0][2]
         self.assertEqual(params["virtio0"], "local-lvm:0,import-from=local:import/vj.qcow2,iothread=1")
         self.assertEqual(params["boot"], "order=virtio0")

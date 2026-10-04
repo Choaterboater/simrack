@@ -15,6 +15,10 @@ from labfront.service import SandboxManager
 class FakeProxmox:
     """Records every call. Free and total memory are set by the test."""
 
+    #: Only root@pam may set or clear these, and an API token is never root@pam
+    #: (qemu-server check_vm_modify_config_perm: "only root can set 'args' config").
+    ROOT_ONLY = ("args", "hookscript")
+
     def __init__(self, free_mb: int = 40000, templates: list[int] | None = None, total_mb: int = 65536) -> None:
         self.free_mb = free_mb
         self.total_mb = total_mb
@@ -22,6 +26,10 @@ class FakeProxmox:
         self.networks: dict[str, dict] = {}
         self.snapshots: dict[int, dict[str, dict]] = {}
         self.calls: list[tuple] = []
+        #: (vmid, net index) whose tap passes LACP. A start gives a guest new taps.
+        self.lacp_open: set[tuple[int, int]] = set()
+        #: Guests whose reboot task has ended with them down; qmeventd starts them.
+        self.reboot_requests: set[int] = set()
         self.templates = templates or []
         for vmid in self.templates:
             self.vms[vmid] = {"vmid": vmid, "name": f"tmpl-{vmid}", "template": 1, "maxmem": 5120 * 1024 * 1024}
@@ -78,7 +86,15 @@ class FakeProxmox:
         return 800.0
 
     # -- writes -----------------------------------------------------------------
+    def _refuse_root_only(self, verb, path, fields):
+        refused = [key for key in self.ROOT_ONLY if key in fields]
+        if refused:
+            from labfront.errors import BackendError
+
+            raise BackendError(f"Proxmox API {verb} {path} failed (500).", detail=f"only root can set '{refused[0]}' config")
+
     def create_vm(self, vmid, name, **kwargs):
+        self._refuse_root_only("POST", "/qemu", [key for key, value in kwargs.items() if value])
         self._log("create_vm", vmid, name, **kwargs)
         self.vms[int(vmid)] = {"vmid": int(vmid), "name": name, "config": kwargs, "status": "stopped"}
         nics = {k: v for k, v in (kwargs.get("extra") or {}).items() if re.fullmatch(r"net\d+", k)}
@@ -117,9 +133,13 @@ class FakeProxmox:
         self._log("wait_task", upid, timeout=timeout)
 
     def set_vm_config(self, vmid, **fields):
+        self._refuse_root_only("PUT", f"/qemu/{vmid}/config", fields)
         self._log("set_vm_config", vmid, **fields)
         vm = self.vms.setdefault(int(vmid), {"vmid": int(vmid), "name": f"vm{vmid}"})
         for key, value in self._with_macs(vmid, fields).items():
+            found = re.fullmatch(r"net(\d+)", key)
+            if found:  # a NIC moved to another bridge is a new bridge port
+                self.lacp_open.discard((int(vmid), int(found.group(1))))
             if value is None:
                 vm.pop(key, None)
             else:
@@ -128,8 +148,23 @@ class FakeProxmox:
     def set_power(self, vmid, action, *, timeout=120):
         self._log("set_power", vmid, action, timeout=timeout)
         vm = self.vms.setdefault(int(vmid), {"vmid": int(vmid), "name": f"vm{vmid}"})
-        vm["status"] = "running" if action == "start" else "stopped"
+        if action == "reboot":
+            # PVE reboots only a running guest. The task shuts it down and ends;
+            # qmeventd starts it again a moment later (see qmeventd below).
+            if vm.get("status") == "running":
+                vm["status"] = "stopped"
+                self.reboot_requests.add(int(vmid))
+        else:
+            vm["status"] = "running" if action in ("start", "reset") else "stopped"
+        if action != "reset":  # reset keeps the QEMU process and its taps
+            self.lacp_open = {port for port in self.lacp_open if port[0] != int(vmid)}
         return "UPID:x"
+
+    def qmeventd(self):
+        """Time passes: PVE starts each rebooted guest again, on new taps."""
+        for vmid in self.reboot_requests:
+            self.vms[vmid]["status"] = "running"
+        self.reboot_requests.clear()
 
     def vm_status(self, vmid):
         return {"status": self.vms.get(int(vmid), {}).get("status", "unknown")}
@@ -143,7 +178,15 @@ class FakeProxmox:
 
     def tune_port(self, vmid, net_index):
         self._log("tune_port", vmid, net_index=net_index)
-        return self.vms.get(int(vmid), {}).get("status") == "running"
+        vm = self.vms.get(int(vmid), {})
+        bridge = re.search(r"bridge=([^,]+)", vm.get(f"net{net_index}") or "")
+        if vm.get("status") != "running" or not bridge or not bridge.group(1).startswith("sbx"):
+            return False
+        self.lacp_open.add((int(vmid), int(net_index)))
+        return True
+
+    def passes_lacp(self, vmid, net_index):
+        return (int(vmid), int(net_index)) in self.lacp_open
 
     def delete_bridge(self, name):
         self._log("delete_bridge", name)
@@ -192,6 +235,7 @@ class FakeMist:
         self.fail_reads = False
         self.calls: list[tuple] = []
         self._n = 0
+        self._topologies_made = 0
         self._macs = 0
 
     def _log(self, _method, *args, **kwargs):
@@ -241,8 +285,9 @@ class FakeMist:
         self.settings_by_site[site_id] = json.loads(json.dumps(setting))
 
     def evpn_topologies(self, site_id):
+        """Like Mist, the list has no ``switches`` or ``switch_configs``; get one topology for those."""
         self._read()
-        return list(self.topologies.get(site_id, []))
+        return [{k: v for k, v in json.loads(json.dumps(t)).items() if k not in ("switches", "switch_configs")} for t in self.topologies.get(site_id, [])]
 
     def evpn_topology(self, site_id, topology_id):
         self._read()
@@ -276,13 +321,28 @@ class FakeMist:
             )
         stored = json.loads(json.dumps(topology))
         existing = self.topologies.setdefault(site_id, [])
-        for index, current in enumerate(existing):
-            if stored.get("id") and current.get("id") == stored["id"]:
-                existing[index] = stored
-                return json.loads(json.dumps(stored))
-        stored.setdefault("id", f"topo-{len(existing) + 1}")
+        if stored.get("id"):
+            for index, current in enumerate(existing):
+                if current.get("id") == stored["id"]:
+                    existing[index] = stored
+                    return json.loads(json.dumps(stored))
+            from labfront.errors import BackendError
+
+            raise BackendError(f"Mist API PUT /sites/{site_id}/evpn_topologies/{stored['id']} failed (404).", status=404)
+        self._topologies_made += 1
+        stored["id"] = f"topo-{self._topologies_made}"
         existing.append(stored)
         return json.loads(json.dumps(stored))
+
+    def delete_evpn_topology(self, site_id, topology_id):
+        self._guard("delete_evpn_topology")
+        self._log("delete_evpn_topology", site_id, topology_id)
+        existing = self.topologies.get(site_id, [])
+        if not any(t.get("id") == topology_id for t in existing):
+            from labfront.errors import BackendError
+
+            raise BackendError(f"Mist API DELETE /sites/{site_id}/evpn_topologies/{topology_id} failed (404).", status=404)
+        self.topologies[site_id] = [t for t in existing if t.get("id") != topology_id]
 
     def devices(self, site_id, device_type="switch"):
         self._read()

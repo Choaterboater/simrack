@@ -162,6 +162,8 @@ class MistSnapshot:
     evpn_topologies: list[dict]
     devices: dict = field(default_factory=dict)
     device_cli: dict = field(default_factory=dict)
+    #: where a root password was taken out; revert puts the sandbox's own back there
+    root_password_removed: dict = field(default_factory=lambda: {"site_setting": False, "devices": []})
 
 
 @dataclass

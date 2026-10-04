@@ -11,14 +11,14 @@ import ipaddress
 import unittest
 
 from labfront.api import build_router
-from tests.fakes import TempDir, make_manager
+from tests.fakes import FakeProxmox, TempDir, make_manager
 
 
 class TestMistSetupMimic(unittest.TestCase):
     def setUp(self):
         self._tmp = TempDir()
         self.tmp = self._tmp.__enter__()
-        self.manager = make_manager(self.tmp)
+        self.manager = make_manager(self.tmp, proxmox=FakeProxmox(templates=[320]))
 
     def tearDown(self):
         self._tmp.__exit__(None, None, None)
@@ -50,6 +50,7 @@ class TestMistSetupMimic(unittest.TestCase):
 
         topology = self.manager.mist.evpn_topologies(sandbox.mist_site_id)
         self.assertEqual(len(topology), 1)
+        topology = [self.manager.mist.evpn_topology(sandbox.mist_site_id, topology[0]["id"])]
         self.assertEqual(topology[0]["evpn_options"]["overlay"]["as"], 65200)
         self.assertEqual(len(topology[0]["switches"]), 4)
         self.assertEqual(result["form"], "detailed")

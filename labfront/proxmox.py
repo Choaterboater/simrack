@@ -6,12 +6,15 @@ out, so a user-supplied name cannot become a command.
 
 from __future__ import annotations
 
+import base64
+import ipaddress
 import json
 import ssl
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from . import hostnet
 from .config import Settings
@@ -21,13 +24,24 @@ from .errors import BackendError, NotConfigured
 _UNSET = object()
 
 
+def _tls_for(base: str) -> ssl.SSLContext:
+    """Check the certificate unless the API is this host's own pveproxy: its
+    certificate is self-signed, and loopback traffic never leaves the machine."""
+    host = urllib.parse.urlsplit(base).hostname or ""
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    return ssl._create_unverified_context() if loopback else ssl.create_default_context()
+
+
 class ProxmoxClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
         self.base = self.settings.pve_api_base.rstrip("/")
         self.node = self.settings.pve_node
         self.token = self.settings.pve_token
-        self._ssl = ssl._create_unverified_context()
+        self._ssl = _tls_for(self.base)
 
     # -- transport --------------------------------------------------------------
 
@@ -65,7 +79,13 @@ class ProxmoxClient:
                 pass
             raise BackendError(f"Proxmox API {method} {path} failed ({error.code}).", detail=str(message)[:500]) from error
         except urllib.error.URLError as error:
-            raise BackendError(f"Cannot reach the Proxmox API at {self.base}.", detail=str(error.reason)) from error
+            detail = str(error.reason)
+            if isinstance(error.reason, ssl.SSLCertVerificationError):
+                detail += (
+                    ". LabFront runs on the Proxmox host, so set [proxmox] api to "
+                    "https://127.0.0.1:8006/api2/json, or give that host a certificate this one trusts."
+                )
+            raise BackendError(f"Cannot reach the Proxmox API at {self.base}.", detail=detail) from error
         if not body:
             return None
         try:
@@ -142,14 +162,17 @@ class ProxmoxClient:
         iso: str | None = None,
         import_from: str | None = None,
         disk_bus: str = "virtio0",
-        args: str = "-machine accel=kvm:tcg -smbios type=1,product=VM-VEX -cpu host,kvm=on",
-        hookscript: str | None = None,
+        smbios_product: str | None = None,
+        cpu: str | None = None,
         start: bool = False,
         extra: dict | None = None,
     ) -> str:
         """Create a guest shaped like the live vJunos switches (SeaBIOS, virtio
         disk, serial console). ``import_from`` copies a disk image in;
-        ``iso`` boots an installer from a blank disk."""
+        ``iso`` boots an installer from a blank disk.
+
+        Only fields an API token may set are sent: PVE lets just root@pam set
+        ``args`` or ``hookscript``, so the SMBIOS product goes in ``smbios1``."""
         if disk_bus not in ("virtio0", "scsi0", "sata0"):
             raise BackendError(f"Unsupported disk bus {disk_bus!r}.")
         if import_from and iso:
@@ -163,10 +186,14 @@ class ProxmoxClient:
             "ostype": "l26",
             "serial0": "socket",
             "onboot": 0,
-            "args": args,
+            "cpu": cpu or _UNSET,
             "start": 1 if start else _UNSET,
-            "hookscript": hookscript or _UNSET,
         }
+        if smbios_product:
+            # smbios1 text must be base64 to carry a "-", and PVE only fills in
+            # a uuid when smbios1 is absent, so give one.
+            product = base64.b64encode(smbios_product.encode()).decode()
+            params["smbios1"] = f"base64=1,product={product},uuid={uuid.uuid4()}"
         if disk_bus == "scsi0":
             params["scsihw"] = "virtio-scsi-single"
         if import_from:

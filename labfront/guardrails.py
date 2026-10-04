@@ -49,8 +49,8 @@ class Guardrails:
         if template_vmid in self.settings.production_vmids or template_vmid in self.settings.production_lxc:
             raise GuardrailViolation(
                 f"vmid {template_vmid} is a live lab guest, not a template.",
-                detail="Convert a clean vJunos into its own template first. Never clone a booted "
-                "vJunos: its serial and MAC are baked on first boot.",
+                detail="Make a template with qm template <vmid> from a vJunos that has never booted "
+                "(ADVICE.md, step 2).",
             )
         return template_vmid
 

@@ -24,7 +24,6 @@ FULL = """
 [proxmox]
 node = "pve-lab"
 api = "https://192.0.2.5:8006/api2/json"
-hookscript = "local:snippets/sandbox-hook.sh"
 
 [mist]
 api = "https://api.eu.mist.com/api/v1"
@@ -84,7 +83,6 @@ class TestLabProfile(unittest.TestCase):
         self.assertEqual(settings.profile_path, path)
         self.assertEqual(settings.pve_node, "pve-lab")
         self.assertEqual(settings.pve_api_base, "https://192.0.2.5:8006/api2/json")
-        self.assertEqual(settings.sandbox_hookscript, "local:snippets/sandbox-hook.sh")
         self.assertEqual(settings.mist_api_base, "https://api.eu.mist.com/api/v1")
         self.assertEqual(settings.org_id, "00000000-0000-0000-0000-000000000001")
         self.assertEqual((settings.mgmt_bridge, settings.mgmt_vlan), ("vmbr9", 7))
@@ -102,7 +100,6 @@ class TestLabProfile(unittest.TestCase):
         settings = Settings.from_env({"LABFRONT_PROFILE": self.write(MINIMAL)})
 
         self.assertEqual(settings.pve_api_base, "https://127.0.0.1:8006/api2/json")
-        self.assertEqual(settings.sandbox_hookscript, "local:snippets/labfront-sbx.sh")
         self.assertEqual(settings.mist_api_base, "https://api.mist.com/api/v1")
         self.assertEqual(settings.org_id, "")
         self.assertIsNone(settings.mgmt_vlan, "no vlan means the management port is untagged")
@@ -130,6 +127,11 @@ class TestLabProfile(unittest.TestCase):
             "not a subnet": (MINIMAL.replace("[protected]", '[protected]\nsubnets = ["10.10.10.300/24"]'), "protected.subnets", "subnet"),
             "range backwards": (MINIMAL + "\n[sandbox]\nvmids = [399, 320]\n", "sandbox.vmids", "first"),
             "not TOML": ("[proxmox\nnode = 1", "TOML", "TOML"),
+            "a hookscript, which an API token cannot set": (
+                MINIMAL.replace('node = "pve-lab"', 'node = "pve-lab"\nhookscript = "local:snippets/labfront-sbx.sh"'),
+                "proxmox.hookscript",
+                "template",
+            ),
         }
         for name, (text, key, hint) in cases.items():
             with self.subTest(name):

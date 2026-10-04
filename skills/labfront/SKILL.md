@@ -56,13 +56,14 @@ Every write has run only against test fakes so far: watch the first real one end
 ## Common traps
 - The node name is case sensitive; the wrong case gives HTTP 596 "certificate verify failed". Copy it from `pvesh get /nodes`.
 - Fabric bridges are MTU 9216; at 1500 the overlay BGP flaps every ~90 s.
-- Clone only from a never-booted template: vJunos bakes serial and MAC on first boot. Prove two clones report different serials before building more (ADVICE, step 3).
+- Clone only from a never-booted template: vJunos may bake its serial and MACs in on first boot. LabFront refuses a source that is not a Proxmox template. Prove two clones report different serials before building more (ADVICE, step 3).
 - A build that would leave less than `limits.min_free_ram_mb` free is refused. vJunos memory is never ballooned; stop a sandbox or use `single-switch`.
 - Static out-of-band management needs `use_mgmt_vrf: true`, or the switch loses the cloud.
 - One cable, one bridge, one /31; never a shared transit VLAN.
 - Bridges in files that `/etc/network/interfaces` sources are invisible to the Proxmox API (ADVICE, section 7).
 - A profile that protects one of LabFront's fixed sandbox ranges blocks fabric builds (README, The safety model).
-- The hookscript `deploy/labfront-sbx.sh` matches `sbx*`; a new `bridge_prefix` needs it changed too.
+- LabFront re-opens LACP after each start it makes. A start from the Proxmox GUI keeps LACP only if the template carries the optional hookscript `deploy/labfront-sbx.sh`, which matches `sbx*`: a new `bridge_prefix` needs it changed too.
+- Mist calls failing with "certificate verify failed" mean the network inspects TLS: its CA belongs in the host's trust store. Never turn certificate checks off.
 
 More symptoms and fixes: ADVICE, section 4.
 

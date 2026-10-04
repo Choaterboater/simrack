@@ -17,7 +17,6 @@ from .config import (
     DEFAULT_PVE_API,
     PARK_BRIDGE,
     SANDBOX_BRIDGE_PREFIX,
-    SANDBOX_HOOKSCRIPT,
     SANDBOX_LXC_END,
     SANDBOX_LXC_START,
     SANDBOX_VMID_END,
@@ -39,7 +38,6 @@ SCHEMA: dict[str, dict[str, tuple]] = {
     "proxmox": {
         "node": ("text", _REQUIRED, "pve_node"),
         "api": ("text", DEFAULT_PVE_API, "pve_api_base"),
-        "hookscript": ("text", SANDBOX_HOOKSCRIPT, "sandbox_hookscript"),
     },
     "mist": {
         "api": ("text", DEFAULT_MIST_API, "mist_api_base"),
@@ -64,6 +62,12 @@ SCHEMA: dict[str, dict[str, tuple]] = {
         "bridge_prefix": ("text", SANDBOX_BRIDGE_PREFIX, "sandbox_bridge_prefix"),
         "park_bridge": ("text", PARK_BRIDGE, "park_bridge"),
     },
+}
+
+#: Keys LabFront no longer reads, and where each setting belongs now.
+RETIRED = {
+    "proxmox.hookscript": "Proxmox lets only root@pam set a hookscript, so it goes on the vJunos template "
+    "once (qm set <template> --hookscript ...) and every clone copies it. Delete this line."
 }
 
 #: The file must have these, even if a protected list is empty: saying so is the point.
@@ -96,6 +100,8 @@ def load_profile(path: str) -> dict:
     for section, keys in SCHEMA.items():
         given = raw.get(section, {})
         for key in given:
+            if f"{section}.{key}" in RETIRED:
+                raise fail(f"{section}.{key} is no longer a setting. {RETIRED[f'{section}.{key}']}")
             if key not in keys:
                 raise fail(f"{section}.{key} is not a known setting{_did_you_mean(key, keys)}.")
         for key, (kind, default, field) in keys.items():

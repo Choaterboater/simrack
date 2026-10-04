@@ -15,7 +15,8 @@ COPYFILE_DISABLE=1 tar -C "$ROOT" -cf - --exclude=__pycache__ --exclude=state --
 echo "==> running the test suite on $HOST (a failure stops the deploy before the restart)"
 ssh -o BatchMode=yes "$HOST" "cd $DEST && python3 -m unittest discover -s tests -t . > /tmp/labfront-tests.log 2>&1; rc=\$?; tail -3 /tmp/labfront-tests.log; exit \$rc"
 
-echo "==> installing the sandbox hookscript (sbx* bridges only)"
+echo "==> copying the optional sandbox hookscript (sbx* bridges only; see README, Deploy)"
+ssh -o BatchMode=yes "$HOST" "mkdir -p /var/lib/vz/snippets"
 scp -q "$ROOT/deploy/labfront-sbx.sh" "$HOST:/var/lib/vz/snippets/labfront-sbx.sh"
 ssh -o BatchMode=yes "$HOST" "chmod 755 /var/lib/vz/snippets/labfront-sbx.sh"
 

@@ -38,7 +38,7 @@ host yet. Start read-only, and read `ADVICE.md` before you turn writes on.
 | **Create Mist site** | Creates the sandbox's own Mist site. Never a live one. |
 | **Build fabric in Mist** | Makes the sandbox's site match its cables: data and voice networks and a VRF on the sandbox ranges (management stays out of band on fxp0), every switch managed by Mist, and an EVPN topology with a fabric port at both ends of each cable. Saves a Mist revert point (`before-fabric-…`) first. Works for recipe and shape sandboxes alike; **Build again** after re-cabling. |
 | **Check cabling** | Checks each cable three ways: Proxmox (both ends on the cable's bridge, link up), LLDP as Mist reports it, and the Mist topology. With writes on it plugs wrong ends back in and parks stray ports; read-only it only reports. It never adds NICs and never writes to Mist. |
-| **Snapshot / Revert Mist** | Saves the site setting, EVPN topology and every device config, and puts them back. |
+| **Snapshot / Revert Mist** | Saves the site setting, every EVPN topology in full and every device config, and puts them back. A topology made since the snapshot is deleted, and one deleted since is made again. Root passwords stay out of the file; revert puts the sandbox's own password back. |
 | **Health** | Reads device connection and `config_status` from Mist. |
 | **Tear down** | Deletes the guests, the bridges and the Mist site. Never the live lab. |
 | **Import (Shapes)** | Reads a Mist EVPN topology you paste or drop, and previews it as a sandbox plan: switches, cabling, and whether it fits on the host. Nothing is built and nothing is sent to Mist. |
@@ -53,11 +53,11 @@ it in for your lab and point `LABFRONT_PROFILE` at it.
 
 | Table | Keys | Meaning |
 |---|---|---|
-| `[proxmox]` | `node` (required), `api`, `hookscript` | The node name, spelled exactly as Proxmox spells it: the API is case sensitive. |
+| `[proxmox]` | `node` (required), `api` | The node name, spelled exactly as Proxmox spells it: the API is case sensitive. Leave `api` at its default, the host itself: LabFront checks the certificate of any other address. |
 | `[mist]` | `api`, `org_id` | Your org's API host (`api.mist.com`, `api.gc1.mist.com`, `api.eu.mist.com`…) and org. |
 | `[management]` | `bridge`, `cidr`, `pool` (required), `vlan` | Where fxp0 goes. Leave `vlan` out when the management network is untagged. The pool must sit inside `cidr`. |
 | `[protected]` | `vmids`, `lxc`, `bridges`, `mist_sites`, `subnets` | Everything live. LabFront refuses any action that would touch these. |
-| `[sandbox]` | `vmids`, `lxc`, `bridge_prefix`, `park_bridge` | Optional. The defaults are 320-399, 350-399, `sbx` and `sbxpark`. The hookscript matches `sbx*`, so change it too if you change the prefix. |
+| `[sandbox]` | `vmids`, `lxc`, `bridge_prefix`, `park_bridge` | Optional. The defaults are 320-399, 350-399, `sbx` and `sbxpark`. The optional hookscript matches `sbx*`, so change it too if you change the prefix. |
 
 A mistake in the profile (an unknown key, a wrong type, a pool outside its
 subnet) stops start-up and names the key, because a typo in a protected list
@@ -71,7 +71,8 @@ the tests prove it:
 
 - guests only in the sandbox range (320-399 by default); the profile's
   protected vmids and containers are hard-refused, even inside that range
-- a clone source can never be a live guest
+- a clone source can never be a live guest, and must be a Proxmox template,
+  made from a vJunos that has never booted (ADVICE.md, step 2)
 - bridges must be `<prefix><vm>_<vm>_<ports>` (`sbx` by default); the profile's
   protected bridges are hard-refused, even when they carry the prefix
 - the profile's Mist sites are hard-refused for writes
@@ -84,14 +85,24 @@ the tests prove it:
 - every fabric bridge is created at **MTU 9216** (1500 causes fabric-wide overlay
   BGP flaps) as a runtime Linux bridge (`ip link`), never through the PVE network
   API, so `/etc/network/interfaces` is never rewritten. They carry
-  `group_fwd_mask 0xfff8`; the `labfront-sbx.sh` hookscript opens LACP per tap.
+  `group_fwd_mask 0xfff8`, and LabFront opens LACP on a switch's taps after
+  every start it makes, because a start gives the guest new taps. A start from
+  the Proxmox GUI keeps LACP only if the template carries the optional
+  hookscript (see Deploy).
   With writes on, bridges a reboot removed are re-created when the service starts
+- switches are made with only settings an API token may set. A clone copies the
+  template's; a boot from an image gets `smbios1` product `VM-VEX` and
+  `cpu: host`. LabFront never sets `args` or `hookscript`: Proxmox lets only
+  `root@pam` set those
 - boot images are limited to `<storage>:iso/*.iso` (CD-ROM on a blank disk) and
   `<storage>:import/*.qcow2|img|raw|vmdk` (imported onto a fresh disk); existing
   guest disks such as `vm-100-disk-0` are refused
 - every async Proxmox task (clone, import, stop, delete, rollback) is waited on;
   running guests are stopped before delete; a teardown that cannot delete
   everything keeps the sandbox record and its Mist site so it can be retried
+- a failed build step deletes only a guest that step created, never one already
+  at that vmid; when Proxmox cannot list its guests, LabFront refuses rather than
+  assume a vmid is free
 - POSTs must be `application/json` from the same origin, and run one at a time
 - memory, not a fixed count, decides how many switches fit. Each switch takes
   5 GB (Juniper's vJunos-switch minimum, one setting: `switch_mem_mb`) and the
@@ -110,6 +121,16 @@ the tests prove it:
 - each sandbox has its own random root password in `state/secrets/` (folder
   700, file 600). It never appears in the state file or an API response except
   Reveal, and it is deleted when a teardown completes
+- Mist snapshots are files in `state/mist-snapshots/<sandbox>/` (folder 700,
+  files 600). Root passwords are taken out before saving, and so is every
+  device CLI line that holds a secret; those lines are kept to read, never
+  replayed. A revert puts the sandbox's own password back where one was, so a
+  password set by hand in Mist comes back as the sandbox's. Snapshots are
+  deleted when a teardown completes, even with `keep_mist`
+- certificates are checked on every call to Mist, and to Proxmox unless `api`
+  is the host itself (loopback, where its self-signed certificate never leaves
+  the machine). Where the network inspects TLS, Mist calls fail until the
+  inspecting CA is in the host's trust store
 - it is **read-only unless** a profile is loaded and `LABFRONT_ALLOW_WRITES=1`
 - shapes are local files in `state/shapes/`. Importing and deleting them works
   read-only and never calls Proxmox or Mist. Only the fabric's shape is kept
@@ -193,6 +214,7 @@ python3 -m unittest discover -s tests -t . -v
 | `test_case16_no_profile_read_only.py` | with no profile every write is refused, and the status says why |
 | `test_case17_profile_guardrails.py` | the guardrails protect what the profile lists, and nothing is hard-coded |
 | `test_case18_mgmt_pool.py` | management addresses come from the profile's pool; a full pool is refused; no vlan leaves fxp0 untagged |
+| `test_case19_real_gear.py` | what real Proxmox and Mist require: only token-settable fields, LACP after each start, certificate checks, cleanup of only what a step created, template-only clones, private Mist snapshots, topologies reverted in full |
 
 ## Deploy
 
@@ -215,8 +237,12 @@ LabFront lives at `/opt/labfront` on the Proxmox host and runs as the
    # LABFRONT_MIST_WRITES=0
    ```
 
-4. The deploy puts the hookscript in `/var/lib/vz/snippets/`, so the `local`
-   storage must allow the `snippets` content type.
+4. Optional: to keep LACP open when someone starts a switch from the Proxmox
+   GUI, put the hookscript on the template once, as root:
+   `qm set <template> --hookscript local:snippets/labfront-sbx.sh`. Every clone
+   copies it. The deploy copies the script to `/var/lib/vz/snippets/`, and the
+   `local` storage must allow the `snippets` content type. LabFront itself never
+   sets a hookscript: Proxmox lets only `root@pam` do that, not an API token.
 
 Then, for the first deploy and every update:
 

@@ -61,9 +61,8 @@ class TestMistRevert(unittest.TestCase):
         self.assertEqual(self.mist.site_setting(self.site), good_setting, "site networks and VRF must come back")
         self.assertEqual(self.mist.device(self.site, self.device), good_device, "device config must come back")
         restored = {t["name"] for t in self.mist.evpn_topologies(self.site)}
-        self.assertIn("reverttest", restored, "the snapshot's topology comes back")
-        self.assertIn("rogue", restored, "a topology the API cannot delete is reported, not silently dropped")
-        self.assertTrue(any("not in the snapshot" in n for n in self.sandbox.notes))
+        self.assertEqual(restored, {"reverttest"}, "the snapshot's topology comes back and the rogue one goes")
+        self.assertEqual(result["topologies_removed"], ["rogue"])
 
     def test_revert_uses_a_real_mist_put_not_a_local_undo(self):
         self.manager.mist_build_fabric(self.sandbox)

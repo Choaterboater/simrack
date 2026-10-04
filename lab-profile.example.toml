@@ -8,8 +8,9 @@
 [proxmox]
 # The Proxmox node name. It is case sensitive: pveproxy answers HTTP 596 for the wrong case.
 node = "pve1"
+# Point api at the host itself: LabFront checks the certificate of any other address,
+# and the Proxmox one is self-signed unless you replaced it.
 # api = "https://127.0.0.1:8006/api2/json"
-# hookscript = "local:snippets/labfront-sbx.sh"
 
 [mist]
 # Your org's API host: api.mist.com, api.gc1.mist.com, api.eu.mist.com and so on.

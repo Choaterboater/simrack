@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import threading
 import time
@@ -83,6 +84,30 @@ def _new_password() -> str:
             return password
 
 
+#: Generated Junos lines that carry a secret, a hash or a $9$ (reversible) string.
+_SECRET_CLI = re.compile(r"password|secret|authentication-key|pre-shared-key|community|\$[1569]\$", re.IGNORECASE)
+
+
+def _without_root_password(config: dict) -> tuple[dict, bool]:
+    """``config`` minus ``switch_mgmt.root_password``, and whether it had one."""
+    mgmt = config.get("switch_mgmt")
+    if not isinstance(mgmt, dict) or "root_password" not in mgmt:
+        return config, False
+    return {**config, "switch_mgmt": {key: value for key, value in mgmt.items() if key != "root_password"}}, True
+
+
+def _with_root_password(config: dict, password: str) -> dict:
+    return {**config, "switch_mgmt": {**(config.get("switch_mgmt") or {}), "root_password": password}}
+
+
+def _cli_without_secrets(reply: object) -> dict:
+    """Mist's generated config for a switch, minus every line that holds a secret."""
+    lines = reply.get("cli") if isinstance(reply, dict) else None
+    if not isinstance(lines, list):
+        return {}
+    return {"cli": [line for line in lines if isinstance(line, str) and not _SECRET_CLI.search(line)]}
+
+
 class SandboxManager:
     def __init__(
         self,
@@ -135,19 +160,20 @@ class SandboxManager:
     def _secret_path(self, name: str) -> str:
         return os.path.join(self.state_dir, "secrets", f"{check_name(name, 'sandbox name')}.json")
 
-    def _write_secret(self, name: str, password: str) -> None:
-        path = self._secret_path(name)
+    @staticmethod
+    def _write_private(path: str, data: bytes) -> None:
+        """Atomic, and readable only by LabFront's own user: 0600 in a 0700 folder."""
         folder = os.path.dirname(path)
         os.makedirs(folder, mode=0o700, exist_ok=True)
         os.chmod(folder, 0o700)
         tmp = path + ".tmp"
-        handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.fchmod(handle, 0o600)
-            os.write(handle, json.dumps({"user": "root", "root_password": password}).encode("utf-8"))
-        finally:
-            os.close(handle)
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as out:
+            os.fchmod(out.fileno(), 0o600)
+            out.write(data)
         os.replace(tmp, path)
+
+    def _write_secret(self, name: str, password: str) -> None:
+        self._write_private(self._secret_path(name), json.dumps({"user": "root", "root_password": password}).encode("utf-8"))
 
     def _root_password(self, sandbox: Sandbox) -> str:
         """The sandbox's root password, made the first time it is needed."""
@@ -172,6 +198,9 @@ class SandboxManager:
             os.remove(self._secret_path(name))
         except FileNotFoundError:
             pass
+
+    def _mist_snapshot_dir(self, name: str) -> str:
+        return os.path.join(self.state_dir, "mist-snapshots", check_name(name, "sandbox name"))
 
     def get(self, name: str) -> Sandbox:
         try:
@@ -451,6 +480,12 @@ class SandboxManager:
         template_vmid = self.guard.check_template(template_vmid)
         if any(n.name == name for n in sandbox.nodes):
             raise GuardrailViolation(f"{name} already exists in {sandbox.name}.")
+        if template_vmid and not image and str(self.proxmox.get_vm(template_vmid).get("template", 0)) != "1":
+            raise GuardrailViolation(
+                f"vmid {template_vmid} is not a template.",
+                detail="LabFront clones only a Proxmox template. Make one with qm template <vmid> "
+                "from a vJunos that has never booted (ADVICE.md, step 2).",
+            )
 
         start_id = self.settings.sandbox_lxc_start if kind == "client" else self.settings.sandbox_vmid_start
         end_id = self.settings.sandbox_lxc_end if kind == "client" else self.settings.sandbox_vmid_end
@@ -472,7 +507,6 @@ class SandboxManager:
         )
 
         memory = self.settings.switch_mem_mb if kind == "switch" else 2048
-        hookscript = self.settings.sandbox_hookscript if kind == "switch" else None
         if image:
             image_kind = self.guard.check_image(image)
         elif not template_vmid:
@@ -484,6 +518,7 @@ class SandboxManager:
         if kind in PORT_KINDS:
             self._ensure_park()
 
+        created = False  # the vmid is LabFront's once Proxmox accepts the create or clone
         try:
             if image:
                 nics = self._switch_nics({}) if kind in PORT_KINDS else {}
@@ -496,21 +531,27 @@ class SandboxManager:
                     iso=image if image_kind == "iso" else None,
                     import_from=image if image_kind == "import" else None,
                     disk_bus="virtio0" if kind == "switch" else "scsi0",
-                    hookscript=hookscript,
+                    # vJunos-switch checks this SMBIOS product and runs a nested VM.
+                    smbios_product="VM-VEX" if kind == "switch" else None,
+                    cpu="host" if kind == "switch" else None,
                     extra={key: value for key, value in nics.items() if value is not None} or None,
                 )
+                created = True
                 self.proxmox.wait_task(upid, timeout=1800)
             else:
-                self.proxmox.wait_task(self.proxmox.clone_vm(template_vmid, vmid, name=name, full=True), timeout=1800)
+                upid = self.proxmox.clone_vm(template_vmid, vmid, name=name, full=True)
+                created = True
+                self.proxmox.wait_task(upid, timeout=1800)
                 nics = self._switch_nics(self.proxmox.get_vm(vmid)) if kind in PORT_KINDS else {}
-                self.proxmox.set_vm_config(vmid, memory=memory, cores=4, onboot=0, hookscript=hookscript, **nics)
+                self.proxmox.set_vm_config(vmid, memory=memory, cores=4, onboot=0, **nics)
             if start:
                 self.proxmox.wait_task(self.proxmox.set_power(vmid, "start"), timeout=120)
         except Exception:
-            try:
-                self._destroy_vm(vmid)
-            except LabError:
-                pass
+            if created:
+                try:
+                    self._destroy_vm(vmid)
+                except LabError:
+                    pass
             raise
 
         node.running = start
@@ -571,10 +612,14 @@ class SandboxManager:
         so two sandboxes can never be handed the same vmid."""
         used = {node.vmid for other in self.sandboxes.values() for node in other.nodes}
         used |= set(self.settings.production_vmids) | set(self.settings.production_lxc)
+        # No guessing: a vmid picked from a partial list could already be someone's guest.
         try:
             used |= {int(vm["vmid"]) for vm in self.proxmox.list_vms()}
-        except (LabError, KeyError, TypeError, ValueError):
-            pass
+        except (KeyError, TypeError, ValueError) as error:
+            raise BackendError(
+                "Proxmox listed its guests in a shape LabFront does not know.",
+                detail="LabFront picks a vmid only from the full list of guests, so it built nothing.",
+            ) from error
         for candidate in range(start, end + 1):
             if candidate not in used:
                 return candidate
@@ -665,14 +710,30 @@ class SandboxManager:
         """Bring a sandbox switch up or down without touching Proxmox by hand."""
         self.guard.check_writes_enabled()
         node = self.guard.check_node_is_sandbox(sandbox, name)
-        if action == "start" and node.kind == "switch" and self.proxmox.vm_status(node.vmid).get("status") != "running":
+        running = self.proxmox.vm_status(node.vmid).get("status") == "running"
+        if action == "start" and node.kind == "switch" and not running:
             self.guard.check_ram(self.proxmox.free_memory_mb(), 1)
-        self.proxmox.wait_task(self.proxmox.set_power(node.vmid, action), timeout=180)
+        # A Proxmox reboot task ends once the guest is down, and Proxmox starts
+        # it again later on new taps, too late to reopen LACP. So shut down, then
+        # start; and, as Proxmox does, reboot only a running guest.
+        steps = (("shutdown", "start") if running else ()) if action == "reboot" else (action,)
+        for step in steps:
+            self.proxmox.wait_task(self.proxmox.set_power(node.vmid, step), timeout=180)
         status = self.proxmox.vm_status(node.vmid)
         node.running = status.get("status") == "running"
+        if node.running and action in ("start", "reboot"):
+            self._reopen_lacp(sandbox, node)
         if save:
             self._save(sandbox)
         return {"node": name, "vmid": node.vmid, "action": action, "status": status.get("status", "unknown")}
+
+    def _reopen_lacp(self, sandbox: Sandbox, node: Node) -> None:
+        """A start gives the guest new taps, and a new tap drops LACP. The
+        template hookscript is optional, so LabFront opens them itself."""
+        for link in sandbox.links:
+            for end_node, port in link.endpoints():
+                if end_node == node.name:
+                    self.proxmox.tune_port(node.vmid, _net_index(port))
 
     # -- cabling ----------------------------------------------------------------
 
@@ -903,6 +964,7 @@ class SandboxManager:
                 self.proxmox.wait_task(self.proxmox.set_power(node.vmid, "stop", timeout=60), timeout=120)
             self.proxmox.wait_task(self.proxmox.rollback_snapshot(node.vmid, label), timeout=600)
             self.proxmox.wait_task(self.proxmox.set_power(node.vmid, "start"), timeout=120)
+            self._reopen_lacp(sandbox, node)
             node.running = True
             result[node.name] = "rolled back and started"
         sandbox.notes.append(f"Reverted to Proxmox snapshot {label}")
@@ -1101,39 +1163,44 @@ class SandboxManager:
         return (stored or {}).get("id") or body.get("id"), "basic"
 
     def mist_snapshot(self, sandbox: Sandbox, label: str) -> dict:
-        """The Mist half of the revert button: site, topology and every device."""
+        """The Mist half of the revert button: site, topology and every device.
+
+        No password is kept: a root password is noted where it was and put back
+        from the sandbox's own secret on revert, and generated config lines that
+        carry a secret are dropped (they are for reading, never replayed)."""
         site_id = self._require_site(sandbox)
         label = _snapshot_label(label)
+        setting, setting_had_password = _without_root_password(self.mist.site_setting(site_id))
         snapshot = MistSnapshot(
             label=label,
             taken_at=self.clock(),
             site_id=site_id,
-            site_setting=self.mist.site_setting(site_id),
-            evpn_topologies=self.mist.evpn_topologies(site_id),
+            site_setting=setting,
+            # The list leaves out each topology's switches; only the topology itself has them.
+            evpn_topologies=[self.mist.evpn_topology(site_id, t["id"]) for t in self.mist.evpn_topologies(site_id) if t.get("id")],
         )
+        snapshot.root_password_removed["site_setting"] = setting_had_password
         for device in self.mist.devices(site_id, "switch"):
-            snapshot.devices[device["id"]] = self.mist.device(site_id, device["id"])
+            config, had_password = _without_root_password(self.mist.device(site_id, device["id"]))
+            snapshot.devices[device["id"]] = config
+            if had_password:
+                snapshot.root_password_removed["devices"].append(device["id"])
             try:
-                snapshot.device_cli[device.get("name", device["id"])] = self.mist.device_cli(site_id, device["id"])
+                snapshot.device_cli[device.get("name", device["id"])] = _cli_without_secrets(self.mist.device_cli(site_id, device["id"]))
             except BackendError:
                 snapshot.device_cli[device.get("name", device["id"])] = {}
-        path = os.path.join(self.state_dir, "mist-snapshots", sandbox.name, f"{label}.json")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "label": label,
-                    "taken_at": snapshot.taken_at,
-                    "site_id": site_id,
-                    "site_setting": snapshot.site_setting,
-                    "evpn_topologies": snapshot.evpn_topologies,
-                    "devices": snapshot.devices,
-                    "device_cli": snapshot.device_cli,
-                },
-                handle,
-                indent=2,
-                sort_keys=True,
-            )
+        path = os.path.join(self._mist_snapshot_dir(sandbox.name), f"{label}.json")
+        body = {
+            "label": label,
+            "taken_at": snapshot.taken_at,
+            "site_id": site_id,
+            "site_setting": snapshot.site_setting,
+            "evpn_topologies": snapshot.evpn_topologies,
+            "devices": snapshot.devices,
+            "device_cli": snapshot.device_cli,
+            "root_password_removed": snapshot.root_password_removed,
+        }
+        self._write_private(path, json.dumps(body, indent=2, sort_keys=True).encode("utf-8"))
         sandbox.mist_snapshots[label] = {"taken_at": snapshot.taken_at, "path": path, "site_id": site_id}
         self._save(sandbox)
         return {"label": label, "taken_at": snapshot.taken_at, "site_id": site_id, "devices": len(snapshot.devices), "path": path}
@@ -1151,25 +1218,46 @@ class SandboxManager:
             data = json.load(handle)
         site_id = data["site_id"]
         self.guard.check_site(site_id)
+        removed = data.get("root_password_removed") or {}
+        password = self._root_password(sandbox) if removed.get("site_setting") or removed.get("devices") else ""
+
+        # A topology the snapshot did not have goes first, before the networks it carries.
+        saved_ids = {t.get("id") for t in data["evpn_topologies"]}
+        live_ids, topologies_removed = set(), []
+        for topology in self.mist.evpn_topologies(site_id):
+            if topology.get("id") and topology["id"] not in saved_ids:
+                self.mist.delete_evpn_topology(site_id, topology["id"])
+                topologies_removed.append(topology.get("name") or topology["id"])
+            else:
+                live_ids.add(topology.get("id"))
 
         # PUT is a replace for these objects, so the site setting goes back whole.
-        self.mist.put_site_setting(site_id, data["site_setting"])
-        existing = {t.get("id"): t for t in self.mist.evpn_topologies(site_id)}
+        setting = _with_root_password(data["site_setting"], password) if removed.get("site_setting") else data["site_setting"]
+        self.mist.put_site_setting(site_id, setting)
         for topology in data["evpn_topologies"]:
-            self.mist.put_evpn_topology(site_id, topology)
-        for topology_id in set(existing) - {t.get("id") for t in data["evpn_topologies"]}:
-            # The API cannot delete a topology key; leave it and report it.
-            sandbox.notes.append(f"Mist topology {topology_id} was not in the snapshot and was left in place")
+            # One deleted since the snapshot is made again: a PUT to its old id would be a 404.
+            body = topology if topology.get("id") in live_ids else {k: v for k, v in topology.items() if k != "id"}
+            try:
+                self.mist.put_evpn_topology(site_id, body)
+            except BackendError as error:
+                if error.status != 400:
+                    raise
+                # As in the build: a Mist that refuses links in the body gets members and roles.
+                self.mist.put_evpn_topology(site_id, fabric.basic_body(body))
+                sandbox.notes.append(f"Mist refused topology {body.get('name')} in full, so it went back as members and roles")
 
         for device_id, config in data["devices"].items():
+            if device_id in (removed.get("devices") or []):
+                config = _with_root_password(config, password)
             self.mist.put_device(site_id, device_id, config)
-        sandbox.notes.append(f"Mist reverted to {label}")
+        sandbox.notes.append(f"Mist reverted to {label}" + (f"; removed topology {', '.join(topologies_removed)}" if topologies_removed else ""))
         self._save(sandbox)
         return {
             "label": label,
             "site_id": site_id,
             "site_setting_restored": True,
             "topologies_restored": len(data["evpn_topologies"]),
+            "topologies_removed": topologies_removed,
             "devices_restored": len(data["devices"]),
         }
 
@@ -1570,6 +1658,7 @@ class SandboxManager:
         if os.path.exists(path):
             os.remove(path)
         self._forget_secret(sandbox.name)
+        shutil.rmtree(self._mist_snapshot_dir(sandbox.name), ignore_errors=True)
         self._drop_park_if_unused()
         return removed
 

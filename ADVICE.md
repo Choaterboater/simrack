@@ -46,37 +46,41 @@ switches are planned; adoption records the address DHCP actually gives fxp0.
 ### Step 2 in detail: build the template
 
 Do not convert a live switch into a template: that would freeze the live lab.
-Instead:
+And never start the new VM before it is a template: vJunos may write its serial
+and MACs to disk on first boot, and every clone would copy them. Instead:
 
 1. Create a new VM in the sandbox range (vmid **320**, 4 cores, 5120 MB) with
    `args: -machine accel=kvm:tcg -smbios type=1,product=VM-VEX -cpu host,kvm=on`
    and `serial0: socket`.
 2. Import the vJunos-switch qcow2 as its disk
    (`qm disk import 320 vJunos-switch-<version>.qcow2 <storage>`), attach it as
-   virtio0 and boot from it.
-3. Boot it with **no fabric NICs**: one NIC on the management bridge (with its
-   VLAN tag, if any) if you want console access. Answer the first-boot questions
-   in the console.
-4. Record the serial: `show chassis hardware` (the Chassis line).
-5. `qm template 320`.
+   virtio0 and make it the boot disk.
+3. It needs no NICs of its own: LabFront gives every clone fxp0 (net0) on the
+   profile's management network and all its switch ports.
+4. Optional, for starts from the Proxmox GUI:
+   `qm set 320 --hookscript local:snippets/labfront-sbx.sh`. LabFront opens
+   LACP itself after every start it makes; a GUI start needs the hookscript.
+5. `qm template 320`, without starting it first. Each clone then has its own
+   first boot, and Adopt sets its root password.
 
-The first boot is what bakes the serial and MAC. That is the whole reason for
-this procedure.
+Do this as root on the host. Proxmox lets only `root@pam` set `args` and
+`hookscript`, so LabFront's API token never sets them; every clone copies them
+from the template, and gets a fresh `smbios1` uuid.
 
 ### Step 3 in detail: the serial question
 
-Each vJunos switch reports a serial. Proxmox gives every clone a fresh `smbios1`
-uuid, so *if* vJunos derives the serial from SMBIOS the clones will differ and
-everything works. If it bakes the serial into the disk image, every clone will be
-a duplicate and Mist will refuse or silently merge them.
+Each vJunos switch reports a serial, and Mist keys on it. Every clone gets a
+fresh `smbios1` uuid and has its own first boot, so the clones should differ
+whether vJunos takes the serial from SMBIOS or makes one on first boot. If they
+are duplicates, Mist will refuse or silently merge them.
 
 Test: clone 320 twice (321, 322), boot each on its own management IP, and
-compare `show chassis hardware` on all three. Ten minutes, and it decides
-whether the multi-switch sandbox works at all.
+compare `show chassis hardware` (the Chassis line) on the two. Ten minutes, and
+it decides whether the multi-switch sandbox works at all.
 
-If the serials collide, the fallback is **one full disk copy per switch** rather
-than clones: `qemu-img convert` a pristine image per switch, or run the first
-boot per switch. Slower and disk-hungry, but it works.
+If the serials collide, the image itself fixes the serial. Booting from the
+image (section 7) will not help: it starts from the same pristine disk. Stop
+building more switches from that image.
 
 ---
 
@@ -152,6 +156,10 @@ Order matters: roll back the guests first, then push the Mist config, then verif
 | Page says "no lab profile is loaded" | `LABFRONT_PROFILE` is unset | Set it in `labfront.env` and restart. |
 | Start-up fails naming a profile key | A mistake in the profile | Fix that key. LabFront will not start on a profile it cannot trust. |
 | Every Proxmox call fails with HTTP 596 "certificate verify failed" | The profile's node name has the wrong case | Copy the name from `pvesh get /nodes`. See section 7. |
+| Proxmox calls fail with "certificate verify failed", and the node name is right | `[proxmox] api` names an address other than the host itself, and its certificate is self-signed | Leave `api` at its default, `https://127.0.0.1:8006/api2/json`. |
+| Mist calls fail with "certificate verify failed" | The network inspects TLS | Add the inspecting CA to the host's trust store (`/usr/local/share/ca-certificates/`, then `update-ca-certificates`). Test with `curl -sS https://api.mist.com/api/v1/`, without `-k`. |
+| Build refused: "vmid … is not a template" | The clone source is a plain VM | Make a clean template (step 2). Never template a booted vJunos. |
+| LACP down on a switch started from the Proxmox GUI | A start gives the guest new taps, and the template has no hookscript | Start it from LabFront, or add the hookscript to the template (step 2). |
 | Build fabric refused: "overlaps the protected subnet" | A sandbox range overlaps a subnet the profile protects | The sandbox ranges are fixed (see README.md); free them in the live lab, or build the fabric elsewhere. |
 | "The management pool … is full" | Every pool address is planned for a switch | Tear down a sandbox, or widen `[management] pool`. |
 | Front end says "Mist writes are disabled" | `LABFRONT_MIST_WRITES` is not 1, or no profile is loaded | Expected. Take a snapshot, then set it. |
@@ -170,7 +178,8 @@ border router means the border path is broken, not Mist.
 1. **Fabric bridges are MTU 9216.** No exceptions.
 2. **One cable, one bridge, one /31.** Never a shared transit VLAN between
    borders and a WAN router: that is the loop.
-3. **Never clone a booted vJunos.** Serial and MAC are baked on first boot.
+3. **Never clone a booted vJunos.** It may bake its serial and MACs in on first
+   boot.
 4. **Never balloon or overcommit vJunos memory.** It goes unstable, quietly.
 5. **Management stays out-of-band and static** (`use_mgmt_vrf: true`), so a
    broken fabric never locks you out. The Proxmox serial console
@@ -202,6 +211,12 @@ border router means the border path is broken, not Mist.
   links, whether a device PUT replaces or merges, and whether port stats carry
   each switch's MAC. Watch the first build; if it goes wrong, revert Mist to
   its `before-fabric-…` point and fix from there.
+- A switch booted from an image gets `smbios1` product `VM-VEX` and `cpu: host`
+  instead of the root-only `args` line in step 2. Whether vJunos runs that way
+  is unverified: check the first one reaches the Junos prompt.
+- Revert Mist puts each topology back exactly as Mist returned it. Whether Mist
+  accepts its own computed fields back is unverified; if it refuses, revert
+  sends members and roles, as the fabric build does, and says so in the notes.
 - Check cabling assumes net1 is ge-0/0/0. When LLDP disagrees on a cable that
   Proxmox has right, it says so; that mapping is the first thing to check.
 - The front end has no authentication of its own beyond a bearer token. It binds
@@ -232,5 +247,5 @@ in an `ifreload` that rewrites `/etc/network/interfaces`. Sandbox bridges are ma
 with `ip link` instead and are never written to any file.
 
 **Image boots need no template.** `image=local:import/vJunos-switch-<version>.qcow2`
-imports a pristine disk per switch, which is also the fallback for the serial
-question in step 3. Put the qcow2 in `/var/lib/vz/import/` first.
+imports a pristine disk per switch, the same disk a clone of a never-booted
+template starts from. Put the qcow2 in `/var/lib/vz/import/` first.

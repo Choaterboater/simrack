@@ -109,7 +109,7 @@ class TestSandboxSubnetsStayOffTheProfile(unittest.TestCase):
     def ready_to_build(self, protected: str):
         lab = tempfile.mkdtemp(dir=self.tmp)
         settings = profile_settings(lab, BUILD_LAB.format(subnet=protected), **WRITES)
-        manager = SandboxManager(settings, proxmox=FakeProxmox(), mist=FakeMist())
+        manager = SandboxManager(settings, proxmox=FakeProxmox(templates=[320]), mist=FakeMist())
         sandbox = manager.create_sandbox("demo", "ip-clos", template_vmid=320)
         manager.mist_create_site(sandbox)
         for node in sandbox.nodes:
