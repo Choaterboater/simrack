@@ -282,3 +282,7 @@ real host with writes on; Run and Drive are untested on real gear (Build fabric
 in Mist is tested against a fake Mist only, and the serial login against
 scripted replies, not a real vJunos console); and the profile-driven version
 has not run on a real host. Watch the first build, adoption and fabric build.
+
+## License
+
+MIT. See `LICENSE`.
