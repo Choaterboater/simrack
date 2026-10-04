@@ -294,7 +294,7 @@ def shape_from_mist(doc, now: str | None = None) -> dict:
     remap = {}
     for mac in sorted(macs, key=order):
         live = sorted(used[mac], key=_natural)
-        if all(SANDBOX_PORT.match(p) for p in live):
+        if all(SANDBOX_PORT.fullmatch(p) for p in live):
             continue
         remap[mac] = {p: f"ge-0/0/{i}" for i, p in enumerate(live)}
         notes.append(f"{sandbox[mac]} live ports {', '.join(live)} become ge-0/0/0–{len(live) - 1} in the sandbox.")
@@ -418,7 +418,7 @@ def plan_build(shape: dict, switches=None, *, ports: int = SANDBOX_PORTS) -> dic
             reason = f"{a} is cabled to itself"
         if reason is None:
             for port in (link["a_port"], link["b_port"]):
-                found = _GE_PORT.match(str(port))
+                found = _GE_PORT.fullmatch(str(port))
                 if not found:
                     reason = f"{port} is not a sandbox port"
                     break

@@ -106,7 +106,7 @@ class TestBootImages(unittest.TestCase):
         self.assertFalse(self.px.called("create_vm"), "nothing may be created when the request is refused")
 
     def test_image_names_are_validated_so_proxmox_never_sees_a_junk_name(self):
-        for bad in ("UPPER", "has space", "-leading", "x"):
+        for bad in ("UPPER", "has space", "-leading", "x", "sbx-new-01\n"):
             with self.assertRaises(ValueError):
                 self.manager.provision_node(self.sandbox, bad, kind="image", image="local:iso/a.iso")
         with self.assertRaises(GuardrailViolation):

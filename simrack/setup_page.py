@@ -7,6 +7,7 @@ whether each one is set, and the Proxmox token's name.
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import json
 import os
@@ -16,8 +17,9 @@ import urllib.parse
 
 from .access import token_commands
 from .config import PROFILE_FILE, TOKENS_FILE, Settings
-from .errors import LabError, NotFound
-from .profile import ProfileError, dump_profile, profile_values
+from .errors import GuardrailViolation, LabError, NotFound
+from .profile import ProfileError, dump_profile, profile_values, without_retired
+from .service import PORT_KINDS
 
 FIX_ON_THE_PAGE = "Fix it on the setup page and save again. Nothing was saved."
 FIX_THE_FILE = "Fix the file and import it again. Nothing was saved."
@@ -130,12 +132,53 @@ class SetupPage:
         if not isinstance(raw, dict):
             raise ProfileError("Send the lab profile as {\"profile\": {section: {key: value}}}.")
         raw = {section: {key: value for key, value in keys.items() if value is not None} if isinstance(keys, dict) else keys for section, keys in raw.items()}
-        profile_values(raw, hint=fix)
+        raw, left_out = without_retired(raw)
+        values = profile_values(raw, hint=fix)
+        partly_protected = self._keeps_every_sandbox(dataclasses.replace(self.manager.settings, **values), "import the file again" if imported else "save again")
         text = dump_profile(raw)
         profile_values(tomllib.loads(text), "as written")
         _write_private(os.path.join(self.manager.settings.state_dir, PROFILE_FILE), text)
         self.reload()
-        return self.page()
+        return {**self.page(), "left_out": left_out, "partly_protected": partly_protected}
+
+    def _keeps_every_sandbox(self, after: Settings, again: str) -> list[dict]:
+        """Refuse settings that would strand a sandbox SimRack built, so teardown could no
+        longer remove it: a guest outside the sandbox range, a cable bridge without the
+        prefix, or switches parked on a bridge SimRack no longer uses. A part the new
+        profile protects is left alone instead; it is named, not refused, since it may
+        be a live guest now."""
+        park_now = self.manager.settings.park_bridge
+        stranded: dict[str, list[str]] = {}
+        partly: list[dict] = []
+        for sandbox in sorted(self.manager.sandboxes.values(), key=lambda sandbox: sandbox.name):
+            problems: list[str] = []
+            parts: list[str] = []
+            for node in sandbox.nodes:
+                if node.vmid in after.production_vmids or node.vmid in after.production_lxc:
+                    parts.append(f"{node.name} (vmid {node.vmid})")
+                elif not after.sandbox_vmid_start <= node.vmid <= after.sandbox_vmid_end:
+                    problems.append(f"{node.name} is vmid {node.vmid}, outside {after.sandbox_vmid_start}-{after.sandbox_vmid_end}")
+            for link in sandbox.links:
+                if link.bridge in after.production_bridges:
+                    parts.append(f"bridge {link.bridge}")
+                elif not link.bridge.startswith(after.sandbox_bridge_prefix):
+                    problems.append(f"bridge {link.bridge} does not start with {after.sandbox_bridge_prefix!r}")
+            if sandbox.mist_site_id and sandbox.mist_site_id in after.production_mist_sites:
+                parts.append(f"Mist site {sandbox.mist_site_id}")
+            if after.park_bridge != park_now and any(node.kind in PORT_KINDS for node in sandbox.nodes):
+                problems.append(f"its switches park unused ports on {park_now}")
+            if problems:
+                stranded[sandbox.name] = problems
+            if parts:
+                partly.append({"sandbox": sandbox.name, "parts": parts})
+        if stranded:
+            it = "it" if len(stranded) == 1 else "them"
+            raise GuardrailViolation(
+                f"This profile would strand {' and '.join(stranded)}: SimRack could no longer tear {it} down.",
+                detail=" ".join(f"{name}: {'; '.join(problems)}." for name, problems in stranded.items())
+                + f" Tear {it} down first, then {again}. Nothing was saved.",
+            )
+        return partly
 
     def export(self) -> dict:
         """The saved lab profile as TOML, to keep or to import on another SimRack."""

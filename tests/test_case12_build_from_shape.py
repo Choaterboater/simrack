@@ -259,6 +259,7 @@ class TestPlanBuild(unittest.TestCase):
                 link("sbx-b-01", "ge-0/0/5", "sbx-c-01", "ge-0/0/2"),
                 link("sbx-b-01", "et-0/0/50", "sbx-c-01", "ge-0/0/3"),
                 link("sbx-c-01", "ge-0/0/1", "sbx-c-01", "ge-0/0/2"),
+                link("sbx-a-01", "ge-0/0/1\n", "sbx-b-01", "ge-0/0/1"),
             ],
         }
         plan = plan_build(tiny, ports=4)
@@ -270,6 +271,7 @@ class TestPlanBuild(unittest.TestCase):
                 "ge-0/0/5 is past ge-0/0/3",
                 "et-0/0/50 is not a sandbox port",
                 "sbx-c-01 is cabled to itself",
+                "ge-0/0/1\n is not a sandbox port",
             ],
         )
 
@@ -333,6 +335,7 @@ class TestBuildFromShape(Base):
         self.px.calls.clear()
         cases = [
             ("bad name", dict(name="Bad Name", template_vmid=320), ValueError, ""),
+            ("name with a newline", dict(name="fresh\n", template_vmid=320), ValueError, ""),
             ("taken", dict(name="taken", template_vmid=320), GuardrailViolation, "already exists"),
             ("unknown shape", dict(shape="nope", template_vmid=320), NotFound, ""),
             ("unknown switch", dict(switches=["sbx-acc-09"], template_vmid=320), LabError, "not in shape"),

@@ -137,9 +137,6 @@ class FakeProxmox:
             {"volid": "local:iso/Virtual-Mist-Edge-Deb12-1.0.iso", "content": "iso", "size": 1 << 30},
         ]
 
-    def storage_free_gb(self, storage="local-lvm"):
-        return 800.0
-
     # -- writes -----------------------------------------------------------------
     def _refuse_root_only(self, verb, path, fields):
         refused = [key for key in self.ROOT_ONLY if key in fields]

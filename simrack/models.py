@@ -12,20 +12,20 @@ _VLAN = re.compile(r"^[0-9]{1,4}$")
 
 
 def check_name(value: str, label: str = "name") -> str:
-    if not isinstance(value, str) or not _NAME.match(value):
+    if not isinstance(value, str) or not _NAME.fullmatch(value):
         raise ValueError(f"{label} must be lowercase alphanumeric with dashes (2-32 chars), got {value!r}")
     return value
 
 
 def check_vmid(value: int) -> int:
     value = int(value)
-    if not _VMID.match(str(value)):
+    if not _VMID.fullmatch(str(value)):
         raise ValueError(f"vmid must be a plain number, got {value!r}")
     return value
 
 
 def check_port(value: str) -> str:
-    if not isinstance(value, str) or not _PORT.match(value):
+    if not isinstance(value, str) or not _PORT.fullmatch(value):
         raise ValueError(f"port must look like ge-0/0/2, got {value!r}")
     return value
 
@@ -74,7 +74,7 @@ class Link:
             raise ValueError("A cable cannot connect a node to itself")
         if self.a_port == self.b_port and self.a_node == self.b_node:
             raise ValueError("A cable cannot loop back into the same port")
-        if not re.match(r"^sbx[0-9]{3}_[0-9]{3}_[0-9]{1,2}$", self.bridge):
+        if not re.fullmatch(r"^sbx[0-9]{3}_[0-9]{3}_[0-9]{1,2}$", self.bridge):
             raise ValueError(
                 f"bridge must be named sbx<vmid>_<vmid>_<ports> within the 15 character "
                 f"interface-name limit, got {self.bridge!r}"
@@ -97,9 +97,9 @@ class Network:
     gateway: str
 
     def __post_init__(self) -> None:
-        if not _VLAN.match(str(self.vlan)):
+        if not _VLAN.fullmatch(str(self.vlan)):
             raise ValueError(f"vlan must be numeric, got {self.vlan!r}")
-        if not re.match(r"^[0-9.]+/\d+$", self.cidr):
+        if not re.fullmatch(r"^[0-9.]+/\d+$", self.cidr):
             raise ValueError(f"cidr must look like 10.60.10.0/24, got {self.cidr!r}")
 
 

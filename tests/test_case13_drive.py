@@ -672,9 +672,9 @@ class TestFabricCheck(Built):
             {"mac": m["sbx-acc-01"], "port_id": "ge-0/0/0", "up": True, "neighbor_system_name": "SBX-CORE-01.lab.local"},
             # core-01 ge-0/0/3 <-> acc-02 ge-0/0/0: core-01 sees the wrong switch
             {"mac": m["sbx-core-01"], "port_id": "ge-0/0/3", "up": True, "neighbor_system_name": "sbx-acc-01"},
-            # core-02 ge-0/0/2 <-> acc-01 ge-0/0/1: a default host name, and acc-01 is not adopted yet
+            # Mist knows a switch by its name only once it carries it, so a stranger at a
+            # switch's end is wrong whoever adopted it: acc-01 by hand, acc-02 by SimRack.
             {"mac": m["sbx-core-02"], "port_id": "ge-0/0/2", "up": True, "neighbor_system_name": "Amnesiac"},
-            # core-02 ge-0/0/3 <-> acc-02 ge-0/0/1: acc-02 is adopted, so a stranger is wrong
             {"mac": m["sbx-core-02"], "port_id": "ge-0/0/3", "up": True, "neighbor_system_name": "Amnesiac"},
         ]
         result = self.manager.fabric_check(self.sandbox)
@@ -682,11 +682,29 @@ class TestFabricCheck(Built):
         self.assertEqual(lldp["sbx323_325_20"], "ok")
         self.assertEqual(lldp["sbx323_326_30"], "wrong")
         self.assertIn("sees sbx-acc-01", self.cable(result, "sbx323_326_30")["lldp_detail"])
-        self.assertEqual(lldp["sbx324_325_21"], "waiting")
+        self.assertEqual(lldp["sbx324_325_21"], "wrong")
+        self.assertIn("sees Amnesiac, not sbx-acc-01", self.cable(result, "sbx324_325_21")["lldp_detail"])
         self.assertEqual(lldp["sbx324_326_31"], "wrong")
         self.assertEqual(lldp["sbx321_323_00"], "waiting", "nothing seen yet")
         self.assertTrue(any("NIC" in n and "port" in n for n in result["notes"]), "LLDP wrong over a good Proxmox cable hints at the port mapping")
         self.assertFalse(result["summary"]["healthy"])
+
+    def test_lldp_past_a_guest_that_is_not_a_switch_is_unknown_unless_it_names_a_sandbox_switch(self):
+        for kind, port in (("client", "ge-0/0/5"), ("vsrx", "ge-0/0/6")):
+            with self.subTest(kind=kind):
+                guest = self.manager.provision_node(self.sandbox, f"sbx-{kind}-01", role=kind, kind=kind, template_vmid=320)
+                link = self.manager.cable(self.sandbox, "sbx-acc-02", port, guest.name, "ge-0/0/0")
+                for heard, expected in (("ubuntu", "unknown"), (guest.name, "ok"), ("sbx-core-01", "wrong")):
+                    self.mist.ports_by_site[self.site] = [
+                        {"mac": self.macs["sbx-acc-02"], "port_id": port, "up": True, "neighbor_system_name": heard},
+                    ]
+                    result = self.manager.fabric_check(self.sandbox)
+                    row = self.cable(result, link.bridge)
+                    self.assertEqual(row["lldp"], expected, heard)
+                    if expected == "unknown":
+                        self.assertIn(f"sees ubuntu; {guest.name} is not a switch", row["lldp_detail"])
+                        self.assertNotIn("adopted", row["lldp_detail"])
+                        self.assertTrue(result["summary"]["healthy"], "a name SimRack cannot judge is no fault")
 
     def test_a_switch_mist_does_not_know_is_unknown(self):
         self.mist.devices_by_site[self.site] = [d for d in self.mist.devices_by_site[self.site] if d["name"] != "sbx-bl-01"]

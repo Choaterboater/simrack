@@ -6,6 +6,8 @@ root-only field, and Mist can delete a topology.
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import ssl
 import stat
@@ -63,6 +65,26 @@ class TestProxmoxClientWire(unittest.TestCase):
         self.assertEqual(form["cpu"], ["host"])
         self.assertRegex(form["smbios1"][0], r"^base64=1,product=Vk0tVkVY,uuid=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
+    def test_images_still_list_the_isos_on_a_proxmox_without_the_import_content_type(self):
+        """Proxmox before 8.2 has no import content type, and refuses to be asked for it."""
+        client = ProxmoxClient(Settings(pve_token="t"))
+        isos = json.dumps({"data": [{"volid": "local:iso/vjunos.iso", "size": 1024}]}).encode()
+        refusal = b'{"errors": {"content": "value \'import\' does not have a value in the enumeration"}, "data": null}'
+
+        def answering(code):
+            def fake_urlopen(request, timeout, context):
+                if "content=import" in request.full_url:
+                    raise urllib.error.HTTPError(request.full_url, code, "refused", {}, io.BytesIO(refusal))
+                return Reply(isos)
+
+            return fake_urlopen
+
+        with mock.patch("urllib.request.urlopen", answering(400)):
+            self.assertEqual(client.list_images(), [{"volid": "local:iso/vjunos.iso", "content": "iso", "size": 1024}])
+        with mock.patch("urllib.request.urlopen", answering(500)), self.assertRaises(BackendError) as caught:
+            client.list_images()
+        self.assertEqual(caught.exception.status, 500, "any other failure is still told")
+
 
 REMOTE_PVE = "https://pve.example.net:8006/api2/json"
 
@@ -77,7 +99,7 @@ class TestCertificates(unittest.TestCase):
         self.assertTrue(context.check_hostname)
 
     def test_the_mist_token_only_goes_to_a_mist_cloud_whose_certificate_checks_out(self):
-        sent = wire(MistClient(Settings(mist_token="t")), lambda c: c.orgs())
+        sent = wire(MistClient(Settings(mist_token="t")), lambda c: c.sites("org-1"))
         self.assert_verified(sent[0]["context"])
 
     def test_a_proxmox_api_on_another_host_is_verified(self):
@@ -95,12 +117,13 @@ class TestCertificates(unittest.TestCase):
         refused = urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed: self-signed certificate"))
         with mock.patch("urllib.request.urlopen", side_effect=refused), self.assertRaises(BackendError) as caught:
             client.vm_status(100)
-        self.assertIn("127.0.0.1", caught.exception.detail)
+        self.assertIn("on the setup page set the Proxmox address to https://127.0.0.1:8006/api2/json and paste the token again", caught.exception.detail)
+        self.assertNotIn("[proxmox] api", caught.exception.detail)
 
     def test_a_refused_mist_certificate_says_how_to_fix_it(self):
         refused = urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed: unable to get local issuer certificate"))
         with mock.patch("urllib.request.urlopen", side_effect=refused), self.assertRaises(BackendError) as caught:
-            MistClient(Settings(mist_token="t")).orgs()
+            MistClient(Settings(mist_token="t")).sites("org-1")
         self.assertIn("update-ca-certificates", caught.exception.detail)
 
 

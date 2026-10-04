@@ -21,6 +21,7 @@ import urllib.request
 from simrack.access import required_privileges
 from simrack.api import serve
 from simrack.config import Settings
+from simrack.models import Link, Node, Recipe, Sandbox
 from simrack.proxmox import ProxmoxClient
 from simrack.service import SandboxManager
 from simrack.setup_page import MIST_API
@@ -285,6 +286,100 @@ class TestTheSetupPage(unittest.TestCase):
         self.assertIn("management.vlan", reply["error"])
         self.assertEqual(reply["detail"], "Fix the file and import it again. Nothing was saved.")
         self.assertFalse(self.call("GET", "/api/setup")[1]["done"])
+
+    def test_a_file_from_before_an_upgrade_imports_without_its_retired_keys_and_says_why(self):
+        old = (
+            textwrap.dedent(PROFILE)
+            .replace('node = "pve-lab"', 'node = "pve-lab"\napi = "https://192.0.2.5:8006/api2/json"\nhookscript = "local:snippets/simrack-sbx.sh"')
+            + '\n[mist]\napi = "https://api.eu.mist.com/api/v1"\n'
+        )
+        before = self.call("GET", "/api/setup")[1]["tokens"]
+
+        status, reply = self.call("POST", "/api/setup", {"toml": old})
+
+        self.assertEqual(status, 200, reply)
+        self.assertTrue(reply["done"])
+        left_out = {item["key"]: item["why"] for item in reply["left_out"]}
+        self.assertEqual(list(left_out), ["proxmox.api", "proxmox.hookscript", "mist.api"], "in the file's order")
+        self.assertIn("next to the Proxmox token", left_out["proxmox.api"])
+        self.assertIn("template", left_out["proxmox.hookscript"])
+        self.assertIn("next to the Mist token", left_out["mist.api"])
+        self.assertNotIn("Saving the setup page", json.dumps(reply["left_out"]), "it is already left out")
+        saved = self.call("GET", "/api/setup/export")[1]["toml"]
+        self.assertNotIn("hookscript", saved)
+        self.assertNotRegex(saved, r"(?m)^api\s*=")
+        self.assertEqual(self.call("GET", "/api/setup")[1]["tokens"], before, "a file never moves where a token goes")
+
+    def test_a_profile_without_retired_keys_leaves_nothing_out(self):
+        for body in ({"profile": SAVED}, {"toml": textwrap.dedent(PROFILE)}):
+            with self.subTest(sent=next(iter(body))):
+                self.assertEqual(self.call("POST", "/api/setup", body)[1]["left_out"], [])
+
+    def built(self) -> str:
+        """A saved profile and a sandbox SimRack built under it, after a restart. Returns the profile saved."""
+        self.call("POST", "/api/setup", {"profile": SAVED})
+        sandbox = Sandbox(
+            name="sbx-a",
+            created_at="2026-10-04T00:00:00Z",
+            recipe=Recipe(),
+            nodes=[Node(name="sbx-acc-01", vmid=321), Node(name="sbx-acc-02", vmid=322)],
+            links=[Link("sbx-acc-01", "ge-0/0/1", "sbx-acc-02", "ge-0/0/1", "sbx321_322_1")],
+            mist_site_id="site-a",
+        )
+        os.makedirs(os.path.join(self.tmp, "sandboxes"), exist_ok=True)
+        with open(os.path.join(self.tmp, "sandboxes", "sbx-a.json"), "w", encoding="utf-8") as handle:
+            json.dump(sandbox.to_dict(), handle)
+        self.start()
+        return self.call("GET", "/api/setup/export")[1]["toml"]
+
+    def test_a_profile_that_would_strand_a_sandbox_is_refused_naming_it_and_saves_nothing(self):
+        saved = self.built()
+        moves = {
+            "the sandbox range moved off it": ({"vmids": [420, 499], "lxc": [450, 499]}, "sbx-acc-01 is vmid 321, outside 420-499"),
+            "a new bridge prefix": ({**SAVED["sandbox"], "bridge_prefix": "lab"}, "bridge sbx321_322_1 does not start with 'lab'"),
+            "a new park bridge": ({**SAVED["sandbox"], "park_bridge": "sbxpark2"}, "its switches park unused ports on sbxpark"),
+        }
+        for name, (sandbox, why) in moves.items():
+            with self.subTest(name):
+                status, reply = self.call("POST", "/api/setup", {"profile": {**SAVED, "sandbox": sandbox}})
+
+                self.assertEqual(status, 409, reply)
+                self.assertIn("sbx-a", reply["error"])
+                self.assertIn(why, reply["detail"])
+                self.assertIn("Tear it down first, then save again. Nothing was saved.", reply["detail"])
+                self.assertEqual(self.call("GET", "/api/setup/export")[1]["toml"], saved)
+
+        status, reply = self.call("POST", "/api/setup", {"toml": saved.replace("vmids = [320, 399]", "vmids = [420, 499]")})
+
+        self.assertEqual(status, 409, reply)
+        self.assertIn("Tear it down first, then import the file again. Nothing was saved.", reply["detail"])
+        self.assertEqual(self.call("GET", "/api/setup/export")[1]["toml"], saved)
+
+    def test_protecting_part_of_a_sandbox_saves_and_names_what_simrack_now_leaves_alone(self):
+        self.built()
+        protected = {**SAVED["protected"], "vmids": [200, 322], "bridges": ["sbx321_322_1"], "mist_sites": ["site-a"]}
+
+        status, reply = self.call("POST", "/api/setup", {"profile": {**SAVED, "protected": protected}})
+
+        self.assertEqual(status, 200, reply)
+        self.assertEqual(reply["partly_protected"], [{"sandbox": "sbx-a", "parts": ["sbx-acc-02 (vmid 322)", "bridge sbx321_322_1", "Mist site site-a"]}])
+
+    def test_a_guest_protected_now_cannot_be_stranded_by_a_range_move(self):
+        self.built()
+        protected = {**SAVED["protected"], "vmids": [200, 321, 322]}
+
+        status, reply = self.call("POST", "/api/setup", {"profile": {**SAVED, "protected": protected, "sandbox": {"vmids": [420, 499], "lxc": [450, 499]}}})
+
+        self.assertEqual(status, 200, reply)
+        self.assertEqual(reply["partly_protected"], [{"sandbox": "sbx-a", "parts": ["sbx-acc-01 (vmid 321)", "sbx-acc-02 (vmid 322)"]}])
+
+    def test_a_change_that_keeps_every_sandbox_says_nothing_about_them(self):
+        self.built()
+
+        status, reply = self.call("POST", "/api/setup", {"profile": {**SAVED, "protected": {**SAVED["protected"], "vmids": [200, 201]}}})
+
+        self.assertEqual(status, 200, reply)
+        self.assertEqual(reply["partly_protected"], [])
 
     def test_it_shows_how_to_make_a_proxmox_token_that_may_do_just_what_simrack_checks(self):
         self.call("POST", "/api/setup", {"profile": {**SAVED, "management": {**SAVED["management"], "vlan": 10}}})

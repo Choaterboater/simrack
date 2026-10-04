@@ -86,10 +86,12 @@ class TestCableMovesReachProxmox(unittest.TestCase):
 
     def test_moving_to_an_occupied_port_or_a_stranger_node_is_refused(self):
         link = self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/3", "sbx-core-01", "ge-0/0/3")
+        recipe = next(c for c in self.sandbox.links if ("sbx-acc-01", "ge-0/0/2") in ((c.a_node, c.a_port), (c.b_node, c.b_port)))
+        far = recipe.b_node if recipe.a_node == "sbx-acc-01" else recipe.a_node
         with self.assertRaises(GuardrailViolation) as caught:
             # ge-0/0/2 on the access switch already carries the recipe cable.
             self.manager.move_cable(self.sandbox, link.bridge, "sbx-acc-01", "ge-0/0/2", from_node="sbx-core-01")
-        self.assertIn("already cabled", str(caught.exception))
+        self.assertIn(f"sbx-acc-01 ge-0/0/2 is already cabled to {far}.", str(caught.exception))
         self.manager.provision_node(self.sandbox, "sbx-acc-09", template_vmid=320)
         with self.assertRaises(GuardrailViolation):
             self.manager.move_cable(self.sandbox, link.bridge, "sbx-acc-09", "ge-0/0/2")
@@ -125,11 +127,23 @@ class TestCableMovesReachProxmox(unittest.TestCase):
             self.manager.move_cable(self.sandbox, link.bridge, "sbx-acc-01", "ge-0/0/4", from_node="sbx-core-01")
         self.assertIn("itself", str(caught.exception))
 
-    def test_an_occupied_port_is_refused(self):
+    def test_an_occupied_port_is_refused_naming_the_switch_at_the_far_end(self):
         self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/3", "sbx-core-01", "ge-0/0/3")
-        with self.assertRaises(GuardrailViolation) as caught:
-            self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/3", "sbx-core-01", "ge-0/0/1")
-        self.assertIn("already cabled", str(caught.exception))
+        for node, far in (("sbx-acc-01", "sbx-core-01"), ("sbx-core-01", "sbx-acc-01")):
+            with self.subTest(end=node):
+                with self.assertRaises(GuardrailViolation) as caught:
+                    self.manager.cable(self.sandbox, node, "ge-0/0/3", far, "ge-0/0/4")
+                self.assertIn(f"{node} ge-0/0/3 is already cabled to {far}.", str(caught.exception))
+
+    def test_a_port_with_a_trailing_newline_is_refused_before_proxmox_is_touched(self):
+        link = self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/3", "sbx-core-01", "ge-0/0/3")
+        self.px.calls.clear()
+        with self.subTest("cable"), self.assertRaises(ValueError):
+            # "ge-0/0/3\n" is not "ge-0/0/3", so it would pass as free and take over net4.
+            self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/3\n", "sbx-core-01", "ge-0/0/4")
+        with self.subTest("move"), self.assertRaises(ValueError):
+            self.manager.move_cable(self.sandbox, link.bridge, "sbx-core-01", "ge-0/0/1\n")
+        self.assertEqual(self.px.calls, [])
 
 
 if __name__ == "__main__":

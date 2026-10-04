@@ -65,14 +65,15 @@ SCHEMA: dict[str, dict[str, tuple]] = {
     },
 }
 
-#: Keys SimRack no longer reads, and where each setting belongs now.
+#: Keys SimRack no longer reads, and where each setting belongs now. Saving the
+#: setup page, or importing a file there, leaves them out.
 RETIRED = {
     "proxmox.hookscript": "Proxmox lets only root@pam set a hookscript, so it goes on the vJunos template "
-    "once (qm set <template> --hookscript ...) and every clone copies it. Saving the setup page drops this key.",
+    "once (qm set <template> --hookscript ...) and every clone copies it.",
     "proxmox.api": "The Proxmox address is now set next to the Proxmox token on the setup page, so the token "
-    "is only ever sent where you chose. Saving the setup page drops this key.",
+    "is only ever sent where you chose.",
     "mist.api": "The Mist region is now set next to the Mist token on the setup page, so the token "
-    "is only ever sent where you chose. Saving the setup page drops this key.",
+    "is only ever sent where you chose.",
 }
 
 #: The file must have these, even if a protected list is empty: saying so is the point.
@@ -111,7 +112,7 @@ def profile_values(raw: dict, path: str = "", hint: str = HINT) -> dict:
         given = raw.get(section, {})
         for key in given:
             if f"{section}.{key}" in RETIRED:
-                raise fail(f"{section}.{key} is no longer a setting. {RETIRED[f'{section}.{key}']}")
+                raise fail(f"{section}.{key} is no longer a setting. {RETIRED[f'{section}.{key}']} Saving the setup page drops this key.")
             if key not in keys:
                 raise fail(f"{section}.{key} is not a known setting{_did_you_mean(key, keys)}.")
         for key, (kind, default, field) in keys.items():
@@ -129,6 +130,23 @@ def profile_values(raw: dict, path: str = "", hint: str = HINT) -> dict:
 
     _check_pool_inside(values["mgmt_pool"], values["mgmt_cidr"], fail)
     return values
+
+
+def without_retired(raw: dict) -> tuple[dict, list[dict]]:
+    """A lab profile without the keys SimRack no longer reads, and each key left out with why."""
+    kept: dict = {}
+    left_out: list[dict] = []
+    for section, keys in raw.items():
+        if not isinstance(keys, dict):
+            kept[section] = keys
+            continue
+        kept[section] = {}
+        for key, value in keys.items():
+            if f"{section}.{key}" in RETIRED:
+                left_out.append({"key": f"{section}.{key}", "why": RETIRED[f"{section}.{key}"]})
+            else:
+                kept[section][key] = value
+    return kept, left_out
 
 
 def dump_profile(raw: dict) -> str:

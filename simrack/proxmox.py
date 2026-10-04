@@ -80,13 +80,15 @@ class ProxmoxClient:
                 message = json.loads(raw).get("errors", raw)
             except json.JSONDecodeError:
                 pass
-            raise BackendError(f"Proxmox API {method} {path} failed ({error.code}).", detail=str(message)[:500]) from error
+            raise BackendError(
+                f"Proxmox API {method} {path} failed ({error.code}).", detail=str(message)[:500], status=error.code
+            ) from error
         except urllib.error.URLError as error:
             detail = str(error.reason)
             if isinstance(error.reason, ssl.SSLCertVerificationError):
                 detail += (
-                    ". SimRack runs on the Proxmox host, so set [proxmox] api to "
-                    "https://127.0.0.1:8006/api2/json, or give that host a certificate this one trusts."
+                    ". SimRack runs on the Proxmox host, so on the setup page set the Proxmox address to "
+                    "https://127.0.0.1:8006/api2/json and paste the token again, or give that host a certificate this one trusts."
                 )
             raise BackendError(f"Cannot reach the Proxmox API at {self.base}.", detail=detail) from error
         if not body:
@@ -148,16 +150,19 @@ class ProxmoxClient:
             time.sleep(poll)
 
     def list_images(self, storage: str = "local") -> list[dict]:
-        """ISOs and importable disk images a sandbox node can boot from."""
+        """ISOs and importable disk images a sandbox node can boot from. Proxmox
+        before 8.2 has no import content type and answers 400 when asked for it."""
         found = []
         for content in ("iso", "import"):
-            for item in self._request("GET", f"/nodes/{self.node}/storage/{storage}/content", {"content": content}) or []:
+            try:
+                items = self._request("GET", f"/nodes/{self.node}/storage/{storage}/content", {"content": content}) or []
+            except BackendError as error:
+                if content == "import" and error.status == 400:
+                    continue
+                raise
+            for item in items:
                 found.append({"volid": item.get("volid", ""), "content": content, "size": item.get("size", 0)})
         return found
-
-    def storage_free_gb(self, storage: str = "local-lvm") -> float:
-        status = self._request("GET", f"/nodes/{self.node}/disks/list") or []
-        return float(status[0].get("avail", 0)) / 1024**3 if status else 0.0
 
     # -- guests -----------------------------------------------------------------
 

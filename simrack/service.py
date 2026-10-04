@@ -816,7 +816,7 @@ class SandboxManager:
                 if (existing.a_node, existing.a_port) == (node.name, port) or (existing.b_node, existing.b_port) == (node.name, port):
                     raise GuardrailViolation(
                         f"{node.name} {port} is already cabled to "
-                        f"{existing.a_node if existing.a_node == node.name else existing.b_node}.",
+                        f"{existing.b_node if existing.a_node == node.name else existing.a_node}.",
                         detail="Unplug it first, or use a different port.",
                     )
 
@@ -900,7 +900,7 @@ class SandboxManager:
             if other.bridge == bridge:
                 continue
             if (other.a_node, other.a_port) == (to_node, to_port) or (other.b_node, other.b_port) == (to_node, to_port):
-                peer = other.a_node if other.a_node == to_node else other.b_node
+                peer = other.b_node if other.a_node == to_node else other.a_node
                 raise GuardrailViolation(
                     f"{to_node} {to_port} is already cabled to {peer}.",
                     detail="Unplug it first, or use a different port.",
@@ -1542,15 +1542,17 @@ class SandboxManager:
         for name, port, peer in ends:
             stat = heard.get((macs[name], port)) or {}
             neighbour = str(stat.get("neighbor_system_name") or "").strip().split(".")[0]
+            far = nodes.get(peer)
             if not stat.get("up") or not neighbour:
                 seen.append(("waiting", ""))
             elif neighbour.lower() == peer.lower():
                 seen.append(("ok", f"{name} {port} sees {peer}"))
-            elif neighbour.lower() in lowered or (nodes.get(peer) is not None and nodes[peer].adopted_at):
+            # A switch is in Mist under its name only once it carries it, so a switch peer announces its name.
+            elif neighbour.lower() in lowered or (far is not None and far.kind in PORT_KINDS):
                 seen.append(("wrong", f"{name} {port} sees {neighbour}, not {peer}"))
             else:
-                seen.append(("waiting", f"{name} {port} sees {neighbour}; {peer} is not adopted yet"))
-        for state in ("wrong", "ok"):
+                seen.append(("unknown", f"{name} {port} sees {neighbour}; {peer} is not a switch, so SimRack cannot tell what name it announces"))
+        for state in ("wrong", "ok", "unknown"):
             said = [text for got, text in seen if got == state]
             if said:
                 return state, "; ".join(said) + "."

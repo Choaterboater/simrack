@@ -80,9 +80,6 @@ class MistClient:
 
     # -- org / site -------------------------------------------------------------
 
-    def orgs(self) -> list[dict]:
-        return self._request("GET", "/orgs") or []
-
     def sites(self, org_id: str | None = None) -> list[dict]:
         return self._request("GET", f"/orgs/{org_id or self.org_id}/sites") or []
 
@@ -138,11 +135,6 @@ class MistClient:
         """The Junos lines that point a switch at Mist; with a site, it lands there."""
         query = "?" + urllib.parse.urlencode({"site_id": site_id}) if site_id else ""
         return self._request("GET", f"/orgs/{org_id or self.org_id}/ocdevices/outbound_ssh_cmd{query}") or {}
-
-    # -- organisations ----------------------------------------------------------
-
-    def organizations(self) -> list[dict]:
-        return self._request("GET", "/orgs") or []
 
 
 def _no_gate() -> Refusal:

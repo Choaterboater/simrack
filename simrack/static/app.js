@@ -583,7 +583,9 @@ function saveProfile(f, btn) {
 function setupSaved(page, said) {
   if (!page) return;
   setupPage = page; updateSetup(true);
-  const ok = $("[data-setup-ok]"); if (ok) ok.textContent = said;
+  const out = (page.left_out || []).map((x) => ` Left out ${x.key}: ${x.why}`).join("")
+    + (page.partly_protected || []).map((x) => ` ${x.sandbox} is now partly protected, so SimRack leaves ${x.parts.join(", ")} alone.`).join("");
+  const ok = $("[data-setup-ok]"); if (ok) ok.textContent = said + out;
   $('[data-op="save-lab"]')?.focus({ preventScroll: true });
 }
 async function importProfile(input) {

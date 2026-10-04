@@ -66,7 +66,12 @@ one is ticked as live. Type anything it cannot see into **Also protect**, such
 as bridges in files that `/etc/network/interfaces` sources (ADVICE.md,
 section 7). Later visits mark guests found since as **new** and saved ones that
 are gone as **not found now**. **Export** and **Import…** move the file between
-hosts; `lab-profile.example.toml` shows every key.
+hosts; an import from an older SimRack leaves out the keys it no longer reads
+and says where each setting went. A save or import that moves the sandbox
+range, prefix or park bridge off a sandbox already built is refused, since
+teardown could no longer remove it; tear it down first. Protecting part of one
+is saved, and the page names what SimRack now leaves alone, even at teardown.
+`lab-profile.example.toml` shows every key.
 
 | Table | Keys | Meaning |
 |---|---|---|
@@ -257,7 +262,7 @@ python3 -m unittest discover -s tests -t . -v
 | `test_case18_mgmt_pool.py` | management addresses come from the profile's pool; a full pool is refused; no vlan leaves fxp0 untagged |
 | `test_case19_real_gear.py` | what real Proxmox and Mist require: only token-settable fields, LACP after each start, certificate checks, cleanup of only what a step created, template-only clones, private Mist snapshots, topologies reverted in full |
 | `test_case20_token_decides.py` | the tokens decide what SimRack may change: Proxmox permissions and the Mist role, no environment switch, and the pause |
-| `test_case21_setup_page.py` | the setup page: what it finds on the host, saving, importing and exporting the profile, the tokens and the addresses they may go to |
+| `test_case21_setup_page.py` | the setup page: what it finds on the host, saving, importing and exporting the profile, the tokens and the addresses they may go to, and refusing a save that would strand a sandbox already built |
 | `test_case22_mcp.py` | the MCP server: the handshake, tools offered by what SimRack may do, the risky tick, Casper's change kinds, jobs that outlast a call, and telling the assistant when the tools change |
 
 ## Deploy
