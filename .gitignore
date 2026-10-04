@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+state/
+.env
+*.token
+# Secrets and the real lab profile stay on the lab host.
+labfront.env
+/lab-profile.toml
+.ruff_cache/

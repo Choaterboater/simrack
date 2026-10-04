@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>LabFront</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%235aa2ff' stroke-width='1.6'%3E%3Crect x='7' y='1.5' width='6' height='4.5' rx='1'/%3E%3Crect x='1.5' y='14' width='6' height='4.5' rx='1'/%3E%3Crect x='12.5' y='14' width='6' height='4.5' rx='1'/%3E%3Cpath d='M10 6v4M4.5 14v-2.5h11V14M10 10v1.5'/%3E%3C/svg%3E">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="top" role="banner">
+  <button class="ghost icon" id="railbtn" data-act="rail" aria-controls="rail" aria-expanded="true" aria-label="Side list" title="Show or hide the side list"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><rect x="1.75" y="2.75" width="14.5" height="12.5" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 3v12" stroke="currentColor" stroke-width="1.5"/></svg></button>
+  <div class="brand">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="7" y="1.5" width="6" height="4.5" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="1.5" y="14" width="6" height="4.5" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="12.5" y="14" width="6" height="4.5" rx="1" stroke="currentColor" stroke-width="1.5"/><path d="M10 6v4M4.5 14v-2.5h11V14M10 10v1.5" stroke="currentColor" stroke-width="1.5"/></svg>
+    LabFront
+  </div>
+  <span class="sep"></span>
+  <span class="stat"><span class="conn" id="conn" title="API connection"></span><b class="mono" id="node">–</b></span>
+  <span class="stat" title="Memory new guests can use"><span class="meter"><i id="rambar"></i></span><span id="ram">…</span></span>
+  <span class="stat" id="fitstat"></span>
+  <span class="spacer"></span>
+  <span class="chip" id="modechip">…</span>
+  <span class="chip" id="mistchip">Mist …</span>
+  <span class="stat faint" id="updated"></span>
+  <button class="ghost sm" data-act="refresh" title="Refresh now">Refresh</button>
+  <button class="ghost icon" id="themebtn" aria-label="Switch theme" title="Switch theme"><svg class="sun" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="3.25" stroke="currentColor" stroke-width="1.5"/><path d="M9 1.5v1.75M9 14.75v1.75M1.5 9h1.75M14.75 9h1.75M3.7 3.7l1.24 1.24M13.06 13.06l1.24 1.24M3.7 14.3l1.24-1.24M13.06 4.94l1.24-1.24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><svg class="moon" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M15.25 10.9A6.5 6.5 0 0 1 7.1 2.75a6.5 6.5 0 1 0 8.15 8.15Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button>
+</div>
+<div class="banner" id="banner" hidden></div>
+
+<div class="app">
+  <nav class="rail" id="rail" aria-label="Sandboxes and shapes">
+    <div class="rail-head">
+      <h2>Sandboxes</h2>
+      <button class="sm" data-act="new" data-write>New</button>
+    </div>
+    <div class="sbx-list" id="list"></div>
+    <div class="rail-head later">
+      <h2>Shapes</h2>
+      <button class="sm" data-act="import" title="Read a fabric's design from Mist">Import</button>
+    </div>
+    <div class="sbx-list" id="shapes"></div>
+    <details class="prod">
+      <summary>Protected live lab</summary>
+      <p>Never touched by LabFront.</p>
+      <p>VMIDs <span class="mono" id="prodvm"></span></p>
+      <p>Bridges <span class="mono" id="prodbr"></span></p>
+      <p>Mist site <span class="mono" id="prodmist"></span></p>
+    </details>
+  </nav>
+  <main class="main" id="main"></main>
+</div>
+
+<template id="tpl-create">
+  <form class="fields" data-form="create" autocomplete="off">
+    <label class="f">Name<input name="name" required pattern="[a-z][a-z0-9\-]{2,30}" placeholder="cust-demo" title="Lowercase letters, digits and hyphens, 3 to 31 characters"></label>
+    <label class="f">Recipe<select name="recipe" data-recipes></select></label>
+    <p class="note" data-recipe-note></p>
+    <label class="f">Boot from<select name="boot" class="mono" data-boot></select></label>
+    <p class="note" data-boot-note></p>
+    <div class="fit" data-fit></div>
+    <label class="check"><input type="checkbox" name="start" checked> Start guests after building</label>
+    <label class="check"><input type="checkbox" name="mist"> Create a Mist site for it</label>
+    <div class="actions"><button class="primary" type="submit" data-write data-busy-label="Building…">Build sandbox</button><button type="button" class="ghost" data-act="cancel-new" data-cancel>Cancel</button></div>
+  </form>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>

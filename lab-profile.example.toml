@@ -1,0 +1,44 @@
+# LabFront lab profile: what is live on this host, so LabFront never touches it.
+#
+# Copy this file, fill it in for your lab and point LABFRONT_PROFILE at it.
+# Without a profile LabFront stays read-only. A mistake here (an unknown key, a
+# wrong type, a pool outside its subnet) stops start-up and names the key.
+# Secrets never go here: tokens stay in the service environment file.
+
+[proxmox]
+# The Proxmox node name. It is case sensitive: pveproxy answers HTTP 596 for the wrong case.
+node = "pve1"
+# api = "https://127.0.0.1:8006/api2/json"
+# hookscript = "local:snippets/labfront-sbx.sh"
+
+[mist]
+# Your org's API host: api.mist.com, api.gc1.mist.com, api.eu.mist.com and so on.
+api = "https://api.mist.com/api/v1"
+org_id = "00000000-0000-0000-0000-000000000001"
+
+[management]
+# Sandbox switches put fxp0 on this bridge. LabFront never changes the bridge itself.
+bridge = "vmbr0"
+# Leave vlan out if the management network is untagged.
+vlan = 10
+cidr = "192.0.2.0/24"
+# Sandbox switches get addresses from this pool, which must sit inside cidr.
+pool = "192.0.2.200-192.0.2.249"
+
+[protected]
+# Everything live. LabFront refuses any action that would touch these.
+vmids = [100, 101, 102]
+lxc = [200]
+bridges = ["vmbr0", "vmbr1", "lab1", "lab2"]
+# Mist sites that are not sandboxes (site IDs).
+mist_sites = ["00000000-0000-0000-0000-000000000002"]
+# Subnets the live fabric uses. LabFront refuses to build a sandbox fabric on any
+# subnet that overlaps one of these.
+subnets = ["10.10.10.0/24", "172.16.254.0/23"]
+
+# [sandbox] is optional. These are the defaults.
+# [sandbox]
+# vmids = [320, 399]
+# lxc = [350, 399]
+# bridge_prefix = "sbx"   # deploy/labfront-sbx.sh matches sbx*; change it there too
+# park_bridge = "sbxpark"

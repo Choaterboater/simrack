@@ -1,0 +1,459 @@
+{
+ "devices": [
+  {
+   "ip": "192.0.2.11",
+   "mac": "020000000103",
+   "model": "VJUNOS",
+   "name": "acc-4400-02",
+   "type": "switch"
+  },
+  {
+   "ip": "192.0.2.12",
+   "mac": "020000000102",
+   "model": "VJUNOS",
+   "name": "bl-4650-02",
+   "type": "switch"
+  },
+  {
+   "ip": "192.0.2.13",
+   "mac": "020000000106",
+   "model": "VJUNOS",
+   "name": "acc-4400-01",
+   "type": "switch"
+  },
+  {
+   "ip": "192.0.2.14",
+   "mac": "020000000105",
+   "model": "VJUNOS",
+   "name": "core-4650-02",
+   "type": "switch"
+  },
+  {
+   "ip": "192.0.2.15",
+   "mac": "020000000101",
+   "model": "VJUNOS",
+   "name": "core-4650-01",
+   "type": "switch"
+  },
+  {
+   "ip": "192.0.2.16",
+   "mac": "020000000104",
+   "model": "VJUNOS",
+   "name": "bl-4650-01",
+   "type": "switch"
+  }
+ ],
+ "ports": [
+  {
+   "mac": "020000000101",
+   "neighbor_mac": "020000000201",
+   "neighbor_port_desc": "evpn_downlink-to-020000000101",
+   "neighbor_system_name": "bl-4650-01",
+   "port_id": "ge-0/0/0",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000101",
+   "neighbor_mac": "020000000205",
+   "neighbor_port_desc": "evpn_downlink-to-020000000101",
+   "neighbor_system_name": "bl-4650-02",
+   "port_id": "ge-0/0/1",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000101",
+   "neighbor_mac": "020000000206",
+   "neighbor_port_desc": "evpn_uplink-to-020000000101",
+   "neighbor_system_name": "acc-4400-01",
+   "port_id": "ge-0/0/2",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000101",
+   "neighbor_mac": "020000000203",
+   "neighbor_port_desc": "evpn_uplink-to-020000000101",
+   "neighbor_system_name": "acc-4400-02",
+   "port_id": "ge-0/0/3",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000102",
+   "neighbor_mac": "020000000202",
+   "neighbor_port_desc": "evpn_uplink-to-020000000102",
+   "neighbor_system_name": "core-4650-01",
+   "port_id": "ge-0/0/0",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000102",
+   "neighbor_mac": "020000000204",
+   "neighbor_port_desc": "evpn_uplink-to-020000000102",
+   "neighbor_system_name": "core-4650-02",
+   "port_id": "ge-0/0/1",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000102",
+   "neighbor_mac": "020000000201",
+   "neighbor_port_desc": "p2p to vSRX ge-0/0/0.971",
+   "neighbor_system_name": "bl-4650-01",
+   "port_id": "ge-0/0/2",
+   "port_usage": "inet",
+   "up": true
+  },
+  {
+   "mac": "020000000103",
+   "neighbor_mac": "020000000202",
+   "neighbor_port_desc": "evpn_downlink-to-020000000103",
+   "neighbor_system_name": "core-4650-01",
+   "port_id": "ge-0/0/0",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000103",
+   "neighbor_mac": "020000000204",
+   "neighbor_port_desc": "evpn_downlink-to-020000000103",
+   "neighbor_system_name": "core-4650-02",
+   "port_id": "ge-0/0/1",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000104",
+   "neighbor_mac": "020000000202",
+   "neighbor_port_desc": "evpn_uplink-to-020000000104",
+   "neighbor_system_name": "core-4650-01",
+   "port_id": "ge-0/0/0",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000104",
+   "neighbor_mac": "020000000204",
+   "neighbor_port_desc": "evpn_uplink-to-020000000104",
+   "neighbor_system_name": "core-4650-02",
+   "port_id": "ge-0/0/1",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000104",
+   "neighbor_mac": "020000000205",
+   "neighbor_port_desc": "p2p to vSRX ge-0/0/0.972",
+   "neighbor_system_name": "bl-4650-02",
+   "port_id": "ge-0/0/2",
+   "port_usage": "inet",
+   "up": true
+  },
+  {
+   "mac": "020000000105",
+   "neighbor_mac": "020000000201",
+   "neighbor_port_desc": "evpn_downlink-to-020000000105",
+   "neighbor_system_name": "bl-4650-01",
+   "port_id": "ge-0/0/0",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000105",
+   "neighbor_mac": "020000000205",
+   "neighbor_port_desc": "evpn_downlink-to-020000000105",
+   "neighbor_system_name": "bl-4650-02",
+   "port_id": "ge-0/0/1",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000105",
+   "neighbor_mac": "020000000206",
+   "neighbor_port_desc": "evpn_uplink-to-020000000105",
+   "neighbor_system_name": "acc-4400-01",
+   "port_id": "ge-0/0/2",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000105",
+   "neighbor_mac": "020000000203",
+   "neighbor_port_desc": "evpn_uplink-to-020000000105",
+   "neighbor_system_name": "acc-4400-02",
+   "port_id": "ge-0/0/3",
+   "port_usage": "evpn_downlink",
+   "up": true
+  },
+  {
+   "mac": "020000000106",
+   "neighbor_mac": "020000000202",
+   "neighbor_port_desc": "evpn_downlink-to-020000000106",
+   "neighbor_system_name": "core-4650-01",
+   "port_id": "ge-0/0/0",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000106",
+   "neighbor_mac": "020000000204",
+   "neighbor_port_desc": "evpn_downlink-to-020000000106",
+   "neighbor_system_name": "core-4650-02",
+   "port_id": "ge-0/0/1",
+   "port_usage": "evpn_uplink",
+   "up": true
+  },
+  {
+   "mac": "020000000101",
+   "neighbor_mac": null,
+   "neighbor_port_desc": null,
+   "neighbor_system_name": null,
+   "port_id": "cbp0",
+   "port_usage": "",
+   "up": true
+  },
+  {
+   "mac": "020000000101",
+   "neighbor_mac": null,
+   "neighbor_port_desc": null,
+   "neighbor_system_name": null,
+   "port_id": "em1",
+   "port_usage": "",
+   "up": true
+  },
+  {
+   "mac": "020000000101",
+   "neighbor_mac": null,
+   "neighbor_port_desc": null,
+   "neighbor_system_name": null,
+   "port_id": "fxp0",
+   "port_usage": "",
+   "up": true
+  }
+ ],
+ "topology": {
+  "evpn_options": {
+   "auto_loopback_subnet": "198.18.192.0/24",
+   "auto_router_id_subnet": "198.18.254.0/23",
+   "core_as_border": false,
+   "overlay": {
+    "as": 65000
+   },
+   "routed_at": "edge",
+   "underlay": {
+    "as_base": 65001,
+    "subnet": "198.18.240.0/20",
+    "use_ipv6": false
+   }
+  },
+  "id": "00000000-0000-0000-0000-000000000003",
+  "modified_time": 1790463779,
+  "name": "campus-IP-Clos",
+  "org_id": "00000000-0000-0000-0000-000000000001",
+  "pod_names": {
+   "1": "Pod 1"
+  },
+  "site_id": "00000000-0000-0000-0000-000000000002",
+  "switches": [
+   {
+    "config": {
+     "networks": {
+      "planted": {
+       "subnet": "203.0.113.0/24",
+       "vlan_id": 4001
+      }
+     },
+     "port_config": {
+      "ge-0/0/0,ge-0/0/1": {
+       "usage": "evpn_uplink"
+      }
+     }
+    },
+    "downlink_ips": [
+     "198.51.100.10/31"
+    ],
+    "downlinks": [],
+    "esilaglinks": [],
+    "mac": "020000000103",
+    "model": "VJUNOS",
+    "pod": 1,
+    "role": "access",
+    "router_id": "198.51.100.1",
+    "uplinks": [
+     "020000000101",
+     "020000000105"
+    ]
+   },
+   {
+    "config": {
+     "networks": {
+      "planted": {
+       "subnet": "203.0.113.0/24",
+       "vlan_id": 4001
+      }
+     },
+     "port_config": {
+      "ge-0/0/0,ge-0/0/1": {
+       "usage": "evpn_downlink"
+      },
+      "ge-0/0/2": {
+       "usage": "inet"
+      }
+     }
+    },
+    "downlink_ips": [
+     "198.51.100.11/31"
+    ],
+    "downlinks": [
+     "020000000101",
+     "020000000105"
+    ],
+    "esilaglinks": [],
+    "mac": "020000000102",
+    "model": "VJUNOS",
+    "pod": null,
+    "role": "border",
+    "router_id": "198.51.100.2",
+    "uplinks": []
+   },
+   {
+    "config": {
+     "networks": {
+      "planted": {
+       "subnet": "203.0.113.0/24",
+       "vlan_id": 4001
+      }
+     },
+     "port_config": {
+      "ge-0/0/0,ge-0/0/1": {
+       "usage": "evpn_uplink"
+      }
+     }
+    },
+    "downlink_ips": [
+     "198.51.100.12/31"
+    ],
+    "downlinks": [],
+    "esilaglinks": [],
+    "mac": "020000000106",
+    "model": "VJUNOS",
+    "pod": 1,
+    "role": "access",
+    "router_id": "198.51.100.3",
+    "uplinks": [
+     "020000000101",
+     "020000000105"
+    ]
+   },
+   {
+    "config": {
+     "networks": {
+      "planted": {
+       "subnet": "203.0.113.0/24",
+       "vlan_id": 4001
+      }
+     },
+     "port_config": {
+      "ge-0/0/1,ge-0/0/0": {
+       "usage": "evpn_uplink"
+      },
+      "ge-0/0/3,ge-0/0/2": {
+       "usage": "evpn_downlink"
+      }
+     }
+    },
+    "downlink_ips": [
+     "198.51.100.13/31"
+    ],
+    "downlinks": [
+     "020000000103",
+     "020000000106"
+    ],
+    "esilaglinks": [],
+    "mac": "020000000105",
+    "model": "VJUNOS",
+    "pod": null,
+    "role": "core",
+    "router_id": "198.51.100.4",
+    "uplinks": [
+     "020000000102",
+     "020000000104"
+    ]
+   },
+   {
+    "config": {
+     "networks": {
+      "planted": {
+       "subnet": "203.0.113.0/24",
+       "vlan_id": 4001
+      }
+     },
+     "port_config": {
+      "ge-0/0/1,ge-0/0/0": {
+       "usage": "evpn_uplink"
+      },
+      "ge-0/0/3,ge-0/0/2": {
+       "usage": "evpn_downlink"
+      }
+     }
+    },
+    "downlink_ips": [
+     "198.51.100.14/31"
+    ],
+    "downlinks": [
+     "020000000103",
+     "020000000106"
+    ],
+    "esilaglinks": [],
+    "mac": "020000000101",
+    "model": "VJUNOS",
+    "pod": null,
+    "role": "core",
+    "router_id": "198.51.100.5",
+    "uplinks": [
+     "020000000102",
+     "020000000104"
+    ]
+   },
+   {
+    "config": {
+     "networks": {
+      "planted": {
+       "subnet": "203.0.113.0/24",
+       "vlan_id": 4001
+      }
+     },
+     "port_config": {
+      "ge-0/0/0,ge-0/0/1": {
+       "usage": "evpn_downlink"
+      },
+      "ge-0/0/2": {
+       "usage": "inet"
+      },
+      "ge-0/0/3": {
+       "usage": "me-uplink"
+      }
+     }
+    },
+    "downlink_ips": [
+     "198.51.100.15/31"
+    ],
+    "downlinks": [
+     "020000000101",
+     "020000000105"
+    ],
+    "esilaglinks": [],
+    "mac": "020000000104",
+    "model": "VJUNOS",
+    "pod": null,
+    "role": "border",
+    "router_id": "198.51.100.6",
+    "uplinks": []
+   }
+  ],
+  "version": 11
+ }
+}

@@ -1,0 +1,244 @@
+"""Proxmox VE API client (standard library only).
+
+Talks to the local PVE API over HTTPS with an API token. No shell
+out, so a user-supplied name cannot become a command.
+"""
+
+from __future__ import annotations
+
+import json
+import ssl
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from . import hostnet
+from .config import Settings
+from .errors import BackendError, NotConfigured
+
+#: PVE returns this when a config field was not accepted.
+_UNSET = object()
+
+
+class ProxmoxClient:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings()
+        self.base = self.settings.pve_api_base.rstrip("/")
+        self.node = self.settings.pve_node
+        self.token = self.settings.pve_token
+        self._ssl = ssl._create_unverified_context()
+
+    # -- transport --------------------------------------------------------------
+
+    def _request(self, method: str, path: str, params: dict | None = None) -> object:
+        if not self.token:
+            raise NotConfigured(
+                "Proxmox API token is not set.",
+                detail="Set LABFRONT_PVE_TOKEN (root@pam!labfront=...) in the service environment.",
+            )
+        url = f"{self.base}{path}"
+        data = None
+        payload = {
+            k: ("1" if v is True else "0" if v is False else str(v))
+            for k, v in (params or {}).items()
+            if v is not _UNSET and v is not None
+        }
+        if payload:
+            encoded = urllib.parse.urlencode(payload)
+            if method in ("GET", "DELETE"):
+                url = f"{url}?{encoded}"
+            else:
+                data = encoded.encode()
+        request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("Authorization", f"PVEAPIToken={self.token}")
+        request.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=60, context=self._ssl) as reply:
+                body = reply.read()
+        except urllib.error.HTTPError as error:  # PVE errors are JSON with a message
+            raw = error.read().decode("utf-8", "replace")
+            message = raw
+            try:
+                message = json.loads(raw).get("errors", raw)
+            except json.JSONDecodeError:
+                pass
+            raise BackendError(f"Proxmox API {method} {path} failed ({error.code}).", detail=str(message)[:500]) from error
+        except urllib.error.URLError as error:
+            raise BackendError(f"Cannot reach the Proxmox API at {self.base}.", detail=str(error.reason)) from error
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as error:
+            raise BackendError("Proxmox API returned a non-JSON response.") from error
+        return payload.get("data") if isinstance(payload, dict) else payload
+
+    # -- read -------------------------------------------------------------------
+
+    def node_status(self) -> dict:
+        return self._request("GET", f"/nodes/{self.node}/status") or {}
+
+    def memory_mb(self) -> dict:
+        """Host memory in MB. "free" is what new guests can use: MemAvailable, which
+        counts the page cache the kernel hands back. MemFree alone undercounts it.
+        Older Proxmox releases report only "free", so fall back to that."""
+        try:
+            memory = self.node_status().get("memory") or {}
+            free = memory.get("available", memory.get("free", 0))
+            return {"free": int(free) // (1024 * 1024), "total": int(memory.get("total", 0)) // (1024 * 1024)}
+        except (AttributeError, TypeError, ValueError):
+            return {"free": 0, "total": 0}
+
+    def free_memory_mb(self) -> int:
+        return self.memory_mb()["free"]
+
+    def list_vms(self) -> list[dict]:
+        return self._request("GET", f"/nodes/{self.node}/qemu") or []
+
+    def get_vm(self, vmid: int) -> dict:
+        return self._request("GET", f"/nodes/{self.node}/qemu/{int(vmid)}/config") or {}
+
+    def wait_task(self, upid: object, *, timeout: int = 600, poll: float = 1.0) -> None:
+        """Block until an async PVE task ends. Clone, create, stop, delete and
+        rollback all return a UPID and keep the guest locked until they finish."""
+        if not isinstance(upid, str) or not upid.startswith("UPID:"):
+            return
+        deadline = time.monotonic() + timeout
+        path = f"/nodes/{self.node}/tasks/{urllib.parse.quote(upid, safe='')}/status"
+        while True:
+            status = self._request("GET", path) or {}
+            if status.get("status") == "stopped":
+                if status.get("exitstatus") not in ("OK", None) and not str(status.get("exitstatus", "")).startswith("WARNINGS"):
+                    raise BackendError("Proxmox task failed.", detail=f"{upid}: {status.get('exitstatus')}")
+                return
+            if time.monotonic() > deadline:
+                raise BackendError("Proxmox task timed out.", detail=f"{upid} still running after {timeout}s.")
+            time.sleep(poll)
+
+    def list_images(self, storage: str = "local") -> list[dict]:
+        """ISOs and importable disk images a sandbox node can boot from."""
+        found = []
+        for content in ("iso", "import"):
+            for item in self._request("GET", f"/nodes/{self.node}/storage/{storage}/content", {"content": content}) or []:
+                found.append({"volid": item.get("volid", ""), "content": content, "size": item.get("size", 0)})
+        return found
+
+    def storage_free_gb(self, storage: str = "local-lvm") -> float:
+        status = self._request("GET", f"/nodes/{self.node}/disks/list") or []
+        return float(status[0].get("avail", 0)) / 1024**3 if status else 0.0
+
+    # -- guests -----------------------------------------------------------------
+
+    def create_vm(
+        self,
+        vmid: int,
+        name: str,
+        *,
+        memory_mb: int,
+        cores: int,
+        storage: str = "local-lvm",
+        disk_gb: int = 32,
+        iso: str | None = None,
+        import_from: str | None = None,
+        disk_bus: str = "virtio0",
+        args: str = "-machine accel=kvm:tcg -smbios type=1,product=VM-VEX -cpu host,kvm=on",
+        hookscript: str | None = None,
+        start: bool = False,
+        extra: dict | None = None,
+    ) -> str:
+        """Create a guest shaped like the live vJunos switches (SeaBIOS, virtio
+        disk, serial console). ``import_from`` copies a disk image in;
+        ``iso`` boots an installer from a blank disk."""
+        if disk_bus not in ("virtio0", "scsi0", "sata0"):
+            raise BackendError(f"Unsupported disk bus {disk_bus!r}.")
+        if import_from and iso:
+            raise BackendError("Give an ISO or a disk image, not both.")
+        params = {
+            "vmid": vmid,
+            "name": name,
+            "memory": memory_mb,
+            "cores": cores,
+            "sockets": 1,
+            "ostype": "l26",
+            "serial0": "socket",
+            "onboot": 0,
+            "args": args,
+            "start": 1 if start else _UNSET,
+            "hookscript": hookscript or _UNSET,
+        }
+        if disk_bus == "scsi0":
+            params["scsihw"] = "virtio-scsi-single"
+        if import_from:
+            params[disk_bus] = f"{storage}:0,import-from={import_from}" + (",iothread=1" if disk_bus != "sata0" else "")
+            params["boot"] = f"order={disk_bus}"
+        else:
+            params[disk_bus] = f"{storage}:{int(disk_gb)}" + (",iothread=1" if disk_bus != "sata0" else "")
+            if iso:
+                params["ide2"] = f"{iso},media=cdrom"
+                params["boot"] = f"order=ide2;{disk_bus}"
+            else:
+                params["boot"] = f"order={disk_bus}"
+        params.update(extra or {})
+        return self._request("POST", f"/nodes/{self.node}/qemu", params) or ""
+
+    def clone_vm(self, source_vmid: int, new_vmid: int, *, name: str, full: bool = True) -> str:
+        return (
+            self._request(
+                "POST",
+                f"/nodes/{self.node}/qemu/{int(source_vmid)}/clone",
+                {"newid": int(new_vmid), "name": name, "full": 1 if full else 0},
+            )
+            or ""
+        )
+
+    def delete_vm(self, vmid: int, *, purge: bool = True) -> str:
+        return self._request("DELETE", f"/nodes/{self.node}/qemu/{int(vmid)}", {"purge": 1 if purge else 0, "destroy-unreferenced-disks": 1}) or ""
+
+    def set_vm_config(self, vmid: int, **fields) -> None:
+        """Set fields; a value of None removes that field (PVE ``delete=``)."""
+        clean = {k: v for k, v in fields.items() if v is not None}
+        removed = sorted(k for k, v in fields.items() if v is None)
+        if removed:
+            clean["delete"] = ",".join(removed)
+        if clean:
+            self._request("PUT", f"/nodes/{self.node}/qemu/{int(vmid)}/config", clean)
+
+    def set_power(self, vmid: int, action: str, *, timeout: int = 120) -> str:
+        if action not in {"start", "stop", "shutdown", "reboot", "reset"}:
+            raise BackendError(f"Unknown power action {action!r}.", detail="Use start, stop, shutdown, reboot or reset.")
+        params = {"timeout": timeout} if action in {"stop", "shutdown"} else None
+        return self._request("POST", f"/nodes/{self.node}/qemu/{int(vmid)}/status/{action}", params) or ""
+
+    def vm_status(self, vmid: int) -> dict:
+        return self._request("GET", f"/nodes/{self.node}/qemu/{int(vmid)}/status/current") or {}
+
+    # -- bridges ----------------------------------------------------------------
+    # Sandbox bridges are runtime-only Linux bridges (see hostnet). The PVE
+    # network API is never used: applying it rewrites /etc/network/interfaces.
+
+    def get_network(self) -> list[dict]:
+        return hostnet.list_bridges()
+
+    def create_bridge(self, name: str, *, mtu: int = 9216) -> None:
+        hostnet.create(name, mtu)
+
+    def delete_bridge(self, name: str) -> None:
+        hostnet.delete(name)
+
+    def bridge_exists(self, name: str) -> bool:
+        return hostnet.exists(name)
+
+    def tune_port(self, vmid: int, net_index: int) -> bool:
+        return hostnet.tune_port(vmid, net_index)
+
+    # -- snapshots --------------------------------------------------------------
+
+    def create_snapshot(self, vmid: int, name: str) -> str:
+        return self._request("POST", f"/nodes/{self.node}/qemu/{int(vmid)}/snapshot", {"snapname": name}) or ""
+
+    def rollback_snapshot(self, vmid: int, name: str) -> str:
+        return self._request("POST", f"/nodes/{self.node}/qemu/{int(vmid)}/snapshot/{name}/rollback") or ""
+
+    def delete_snapshot(self, vmid: int, name: str) -> str:
+        return self._request("DELETE", f"/nodes/{self.node}/qemu/{int(vmid)}/snapshot/{name}") or ""

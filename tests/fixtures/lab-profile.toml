@@ -1,0 +1,21 @@
+# The lab the tests run against: guests 200-205 and 210, containers 303-306,
+# one live Mist site and four live subnets. Every value is a placeholder.
+
+[proxmox]
+node = "pve1"
+
+[mist]
+org_id = "org-example"
+
+[management]
+bridge = "vmbr0"
+vlan = 5
+cidr = "192.0.2.0/24"
+pool = "192.0.2.200-192.0.2.249"
+
+[protected]
+vmids = [200, 201, 202, 203, 204, 205, 210]
+lxc = [303, 304, 305, 306]
+bridges = ["vmbr0", "vmbr1", "lab1", "lab2"]
+mist_sites = ["00000000-0000-0000-0000-000000000002"]
+subnets = ["10.10.10.0/24", "10.20.20.0/24", "10.255.240.0/20", "172.16.254.0/23"]
