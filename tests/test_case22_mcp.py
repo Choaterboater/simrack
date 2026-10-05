@@ -244,6 +244,15 @@ class TestWhatAnAssistantIsOffered(McpCase):
                 self.assertIs(tool["annotations"]["readOnlyHint"], name in LOOKS)
                 self.assertTrue(tool["description"])
 
+    def test_the_cabling_tools_say_they_reach_mist(self):
+        """They read LLDP from Mist, so an assistant knows they leave the host."""
+        assistant = self.connect()
+        assistant.hello()
+        tools = tools_of(assistant)
+        for name in ("check_cabling", "fix_cabling"):
+            with self.subTest(name):
+                self.assertIs(tools[name]["annotations"]["openWorldHint"], True)
+
     def test_a_paused_simrack_offers_nothing_that_changes_the_lab_or_mist(self):
         self.manager.set_paused(True)
         assistant = self.connect()

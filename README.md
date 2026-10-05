@@ -79,7 +79,7 @@ is saved, and the page names what SimRack now leaves alone, even at teardown.
 | `[mist]` | `org_id` | Your org: Mist changes stay off until it is set. Its cloud is picked beside the Mist token. |
 | `[management]` | `bridge`, `cidr`, `pool` (required), `vlan` | Where fxp0 goes. Leave `vlan` out when the management network is untagged. The pool must sit inside `cidr`. |
 | `[protected]` | `vmids`, `lxc`, `bridges`, `mist_sites`, `subnets` | Everything live. SimRack refuses any action that would touch these. |
-| `[sandbox]` | `vmids`, `lxc`, `bridge_prefix`, `park_bridge` | Optional. The defaults are 320-399, 350-399, `sbx` and `sbxpark`. The optional hookscript matches `sbx*`, so change it too if you change the prefix. |
+| `[sandbox]` | `vmids`, `lxc`, `bridge_prefix`, `park_bridge` | Optional. The defaults are 320-399, 350-399, `sbx` and the prefix plus `park`. Linux caps a bridge name at 15 characters, and a cable bridge is the prefix, two vmids and two port digits, like `sbx321_322_12`, so a long prefix needs lower vmids. The park bridge is the prefix and then a word. The optional hookscript matches `sbx*`, so change it too if you change the prefix. |
 | `[assistants]` | `risky` | Optional, off by default. Lets an assistant tear down sandboxes, revert, delete switches and type at a switch's console through the [MCP](#mcp) server. It only hides those tools; it does not lock the API. |
 
 A mistake in the profile (an unknown key, a wrong type, a pool outside its
@@ -129,12 +129,14 @@ the tests prove it:
 - bridges must be `<prefix><vm>_<vm>_<ports>` (`sbx` by default); the profile's
   protected bridges are hard-refused, even when they carry the prefix
 - the profile's Mist sites are hard-refused for writes
-- a sandbox fabric never shares a subnet with the live lab. Sandbox fabrics use
-  fixed ranges: 10.255.224.0/20 (underlay), 172.31.0.0/23 (router IDs),
-  172.31.2.0/24 (loopbacks), and 10.60.10.0/24 and 10.60.20.0/24 (data and
-  voice). A fabric build that would overlap a protected subnet is refused before
-  anything is saved or sent, so a profile that protects any of these ranges
-  blocks fabric builds
+- a sandbox fabric never shares a subnet with the live lab. Its usual ranges are
+  10.255.224.0/20 (underlay), 172.31.0.0/23 (router IDs) and 172.31.2.0/24
+  (loopbacks); one that overlaps a protected subnet, the shape's networks or
+  another fabric range steps down to the nearest free block its size, and the
+  build says so in a note. The data and voice networks (10.60.10.0/24 and
+  10.60.20.0/24 in the recipes) are the shape's choice and never move: a build
+  that would put one on a protected subnet is refused before anything is saved
+  or sent
 - every fabric bridge is created at **MTU 9216** (1500 causes fabric-wide overlay
   BGP flaps) as a runtime Linux bridge (`ip link`), never through the PVE network
   API, so `/etc/network/interfaces` is never rewritten. They carry
@@ -167,7 +169,7 @@ the tests prove it:
   management bridge, tagged with its `vlan` or untagged when the profile has
   none (only the guest's NIC is attached; the bridge itself is never changed),
   and net1–net10 are ge-0/0/0–9. A port with no cable is parked on the park
-  bridge (`sbxpark`), a bridge with no uplink, with its link down. Ports past
+  bridge (`sbxpark` by default), a bridge with no uplink, with its link down. Ports past
   ge-0/0/9 are refused before Proxmox is asked
 - management addresses are the first free one in the profile's pool across
   every sandbox, shown as "planned" until adoption reads the address DHCP gave
@@ -356,8 +358,9 @@ the tick there too. Keep the token where the assistant cannot read it, and let
 its host ask before each change.
 
 Looks carry `readOnlyHint`: `check_cabling` only looks, and `fix_cabling` puts
-back what drifted. Changes that throw work away carry `destructiveHint`, and
-every change carries a kind in
+back what drifted. Tools that reach Mist carry `openWorldHint`, the cabling
+pair included, since both read LLDP there. Changes that throw work away carry
+`destructiveHint`, and every change carries a kind in
 `_meta["casper/change-kind"]`: `delete` for `tear_down`, `delete_node`,
 `remove_cable` and `revert_mist`; `disruptive` for `power_node`,
 `revert_guests` and `console_command`; `config` for the rest. In Casper,

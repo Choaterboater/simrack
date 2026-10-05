@@ -26,7 +26,7 @@ from simrack.api import build_router, serve
 from simrack.config import Settings
 from simrack.errors import BackendError, GuardrailViolation, NotConfigured
 from simrack.mist import MistClient
-from simrack.models import Link, Node, Sandbox
+from simrack.models import Link, Network, Node, Sandbox
 from simrack.profile import load_profile
 from simrack.recipes import ip_clos_sandbox
 from simrack.service import _bridge_name
@@ -51,7 +51,7 @@ def pure(nodes, cables, **recipe):
         pod = spec[3] if len(spec) > 3 else None
         built.append(Node(name=name, vmid=330 + index, role=role, kind=kind, pod=pod))
     vmid = {n.name: n.vmid for n in built}
-    links = [Link(a, ap, b, bp, bridge=_bridge_name(vmid[a], vmid[b], ap, bp)) for a, ap, b, bp in cables]
+    links = [Link(a, ap, b, bp, bridge=_bridge_name("sbx", vmid[a], vmid[b], ap, bp)) for a, ap, b, bp in cables]
     return Sandbox(name="pure", created_at="2026-10-02T00:00:00Z", recipe=base, nodes=built, links=links)
 
 
@@ -192,6 +192,23 @@ class TestFabricBody(unittest.TestCase):
         self.assertTrue(any("overlaps the live lab" in n and "10.255.240.0/20" in n for n in info["notes"]), info["notes"])
         self.assertTrue(any("nonsense" in n for n in info["notes"]), info["notes"])
         self.assertTrue(any("2001:db8::/64" in n for n in info["notes"]), info["notes"])
+
+    def test_fabric_ranges_step_clear_of_the_shapes_own_subnets(self):
+        self.sandbox.recipe.networks = [Network("users", 10, "10.255.230.0/24", "10.255.230.1")]
+        self.sandbox.recipe.loopback_cidr = "10.255.208.0/23"  # the shape's router IDs settle first
+        body, info = self.body()
+        options = body["evpn_options"]
+        self.assertEqual(options["auto_router_id_subnet"], "10.255.208.0/23")
+        self.assertEqual(options["underlay"]["subnet"], "10.255.192.0/20")
+        self.assertTrue(any("users network 10.255.230.0/24" in n and "10.255.192.0/20" in n for n in info["notes"]), info["notes"])
+
+    def test_a_shape_range_that_overlaps_another_moves(self):
+        self.sandbox.recipe.underlay_cidr = "10.200.0.0/20"
+        self.sandbox.recipe.loopback_cidr = "10.200.0.0/23"
+        body, info = self.body()
+        self.assertEqual(body["evpn_options"]["underlay"]["subnet"], "10.200.0.0/20")
+        self.assertEqual(body["evpn_options"]["auto_router_id_subnet"], fabric.SAFE_ROUTER_IDS)
+        self.assertTrue(any("router ID subnet 10.200.0.0/23 overlaps the underlay subnet 10.200.0.0/20" in n for n in info["notes"]), info["notes"])
 
     def test_where_the_fabric_routes_by_default(self):
         self.sandbox.recipe.routed_at = None

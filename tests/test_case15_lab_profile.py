@@ -106,6 +106,12 @@ class TestLabProfile(unittest.TestCase):
         self.assertEqual((settings.sandbox_vmid_start, settings.sandbox_vmid_end), (320, 399))
         self.assertEqual((settings.sandbox_bridge_prefix, settings.park_bridge), ("sbx", "sbxpark"))
 
+    def test_the_park_bridge_follows_the_prefix(self):
+        self.write(MINIMAL + '\n[sandbox]\nbridge_prefix = "rk"\n')
+        settings = Settings.load({"SIMRACK_STATE_DIR": self.tmp})
+        self.assertFalse(settings.problems)
+        self.assertEqual((settings.sandbox_bridge_prefix, settings.park_bridge), ("rk", "rkpark"))
+
     def test_the_environment_names_no_profile_and_no_tokens(self):
         elsewhere = self.write(FULL)
         empty = os.path.join(self.tmp, "state")
@@ -139,6 +145,12 @@ class TestLabProfile(unittest.TestCase):
                 "next to the Proxmox token",
             ),
             "the Mist region, which now goes with its token": (MINIMAL + '\n[mist]\napi = "https://api.eu.mist.com/api/v1"\n', "mist.api", "next to the Mist token"),
+            "a prefix no bridge name can start with": (MINIMAL + '\n[sandbox]\nbridge_prefix = "sb-x"\n', "sandbox.bridge_prefix", "letter"),
+            "a prefix that leaves a cable no room": (MINIMAL + '\n[sandbox]\nbridge_prefix = "sandbox"\n', "sandbox.bridge_prefix", "15"),
+            "vmids that leave a cable no room": (MINIMAL + "\n[sandbox]\nvmids = [10000, 10099]\n", "sandbox.vmids", "15"),
+            "a park bridge without the prefix": (MINIMAL + '\n[sandbox]\npark_bridge = "parked"\n', "sandbox.park_bridge", "sbx"),
+            "a park bridge that could be a cable's": (MINIMAL + '\n[sandbox]\npark_bridge = "sbx321"\n', "sandbox.park_bridge", "letter"),
+            "a park bridge past the Linux limit": (MINIMAL + '\n[sandbox]\npark_bridge = "sbxparkingspaces"\n', "sandbox.park_bridge", "15"),
         }
         for name, (text, key, hint) in cases.items():
             with self.subTest(name):

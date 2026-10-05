@@ -42,7 +42,7 @@ subnets = ["10.10.10.0/24", "172.16.254.0/23"]
 # vmids = [320, 399]
 # lxc = [350, 399]
 # bridge_prefix = "sbx"   # deploy/simrack-sbx.sh matches sbx*; change it there too
-# park_bridge = "sbxpark"
+# park_bridge = "sbxpark"  # the prefix and then a word; left out, it is the prefix and "park"
 
 # [assistants] is optional and off by default.
 # [assistants]

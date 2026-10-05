@@ -22,6 +22,9 @@ SANDBOX_VMID_END = 399
 #: Sandbox bridges are named with this prefix. Everything else is refused.
 SANDBOX_BRIDGE_PREFIX = "sbx"
 
+#: Linux caps an interface name at 15 characters (IFNAMSIZ less its NUL).
+IFNAME_MAX = 15
+
 #: Fabric links need jumbo frames; 1500 caused fabric-wide overlay BGP flaps.
 FABRIC_MTU = 9216
 
@@ -30,8 +33,9 @@ FABRIC_MTU = 9216
 MGMT_BRIDGE = "vmbr0"
 
 #: Unused switch ports sit here with the link down, so vJunos always sees all
-#: ten data ports in a stable order. The bridge carries no traffic.
-PARK_BRIDGE = "sbxpark"
+#: ten data ports in a stable order. The bridge carries no traffic. A lab
+#: profile that sets only bridge_prefix gets that prefix and "park".
+PARK_BRIDGE = SANDBOX_BRIDGE_PREFIX + "park"
 
 #: vJunos-switch data ports: ge-0/0/0 to ge-0/0/9 on net1 to net10.
 SWITCH_PORTS = 10

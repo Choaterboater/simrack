@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 
+from .config import IFNAME_MAX
+
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$")
 _VMID = re.compile(r"^[1-9][0-9]{2,5}$")
 _PORT = re.compile(r"^(ge|et)-[0-9]+/[0-9]+/[0-9]+$")
@@ -74,9 +76,9 @@ class Link:
             raise ValueError("A cable cannot connect a node to itself")
         if self.a_port == self.b_port and self.a_node == self.b_node:
             raise ValueError("A cable cannot loop back into the same port")
-        if not re.fullmatch(r"^sbx[0-9]{3}_[0-9]{3}_[0-9]{1,2}$", self.bridge):
+        if len(self.bridge) > IFNAME_MAX or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*?[0-9]+_[0-9]+_[0-9]{1,2}", self.bridge):
             raise ValueError(
-                f"bridge must be named sbx<vmid>_<vmid>_<ports> within the 15 character "
+                f"bridge must be named <prefix><vmid>_<vmid>_<ports> within the {IFNAME_MAX} character "
                 f"interface-name limit, got {self.bridge!r}"
             )
 

@@ -265,24 +265,21 @@ class ProxmoxClient:
     # reads the PVE network API: applying a change there rewrites
     # /etc/network/interfaces.
 
-    def get_network(self) -> list[dict]:
-        return hostnet.list_bridges()
-
     def bridges(self) -> list[dict]:
         """The bridges set up in /etc/network/interfaces, with their "cidr" and "gateway"."""
         return self._request("GET", f"/nodes/{self.node}/network", {"type": "any_bridge"}) or []
 
     def create_bridge(self, name: str, *, mtu: int = 9216) -> None:
-        hostnet.create(name, mtu)
+        hostnet.create(name, mtu, prefix=self.settings.sandbox_bridge_prefix)
 
     def delete_bridge(self, name: str) -> None:
-        hostnet.delete(name)
+        hostnet.delete(name, prefix=self.settings.sandbox_bridge_prefix)
 
     def bridge_exists(self, name: str) -> bool:
         return hostnet.exists(name)
 
     def tune_port(self, vmid: int, net_index: int) -> bool:
-        return hostnet.tune_port(vmid, net_index)
+        return hostnet.tune_port(vmid, net_index, prefix=self.settings.sandbox_bridge_prefix)
 
     # -- snapshots --------------------------------------------------------------
 
@@ -291,6 +288,3 @@ class ProxmoxClient:
 
     def rollback_snapshot(self, vmid: int, name: str) -> str:
         return self._request("POST", f"/nodes/{self.node}/qemu/{int(vmid)}/snapshot/{name}/rollback") or ""
-
-    def delete_snapshot(self, vmid: int, name: str) -> str:
-        return self._request("DELETE", f"/nodes/{self.node}/qemu/{int(vmid)}/snapshot/{name}") or ""

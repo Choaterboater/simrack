@@ -227,12 +227,81 @@ class TestCloneOwnership(unittest.TestCase):
         self.assertIn("not-simracks", [vm.get("name") for vm in self.px.vms.values()])
 
     def test_no_vmid_is_picked_while_proxmox_cannot_list_its_guests(self):
-        self.px.list_vms = mock.Mock(side_effect=BackendError("Cannot reach the Proxmox API."))
+        for listing in ("list_vms", "list_lxc"):
+            with self.subTest(listing), mock.patch.object(self.px, listing, side_effect=BackendError("Cannot reach the Proxmox API.")):
+                before = len(self.px.calls)
+                with self.assertRaises(BackendError):
+                    self.manager.provision_node(self.sandbox, "sbx-acc-02", template_vmid=320)
+                verbs = {call[0] for call in self.px.calls[before:]}
+                self.assertFalse(verbs & {"clone_vm", "create_vm", "delete_vm", "set_power"})
+
+    def test_a_container_in_the_sandbox_range_keeps_its_vmid(self):
+        """Proxmox gives VMs and containers one set of vmids."""
+        taken = max(node.vmid for node in self.sandbox.nodes) + 1
+        self.px.containers[taken] = {"vmid": taken, "name": "not-simracks", "status": "running"}
+        node = self.manager.provision_node(self.sandbox, "sbx-acc-02", template_vmid=320)
+        self.assertEqual(node.vmid, taken + 1)
+        self.assertEqual(self.px.containers[taken]["name"], "not-simracks")
+
+
+class TestOnlyItsOwnGuestsAreDeleted(unittest.TestCase):
+    """A sandbox record keeps a vmid. Something outside SimRack can rename that
+    guest, or delete it and put another at the same vmid, so SimRack checks the
+    name Proxmox has before it deletes."""
+
+    def setUp(self):
+        self._tmp = TempDir()
+        self.tmp = self._tmp.__enter__()
+        self.px = FakeProxmox(free_mb=60000, templates=[320])
+        self.manager = make_manager(self.tmp, proxmox=self.px)
+        self.sandbox = self.manager.create_sandbox("own", "single-switch", template_vmid=320)
+        self.node = self.sandbox.nodes[0]
+
+    def tearDown(self):
+        self._tmp.__exit__(None, None, None)
+
+    def changes_since(self, before):
+        return {call[0] for call in self.px.calls[before:]} & {"delete_vm", "set_power", "set_vm_config", "delete_bridge", "tune_port"}
+
+    def test_teardown_leaves_a_guest_that_is_not_its_own(self):
+        for other, said in (("web-01", "web-01"), (None, "a guest with no name")):
+            with self.subTest(said):
+                guest = {"vmid": self.node.vmid, "status": "running"} | ({"name": other} if other else {})
+                self.px.vms[self.node.vmid] = guest
+                before = len(self.px.calls)
+                removed = self.manager.teardown(self.sandbox)
+                self.assertFalse(removed["complete"])
+                self.assertIn(said, removed["failed"][0])
+                self.assertIs(self.px.vms[self.node.vmid], guest)
+                self.assertEqual([node.name for node in self.sandbox.nodes], ["sbx-acc-01"])
+                self.assertEqual(self.changes_since(before), set())
+
+    def test_teardown_finishes_once_the_other_guest_is_gone(self):
+        self.px.vms[self.node.vmid]["name"] = "web-01"
+        self.assertFalse(self.manager.teardown(self.sandbox)["complete"])
+        del self.px.vms[self.node.vmid]
+        self.assertTrue(self.manager.teardown(self.sandbox)["complete"])
+
+    def test_deleting_a_node_leaves_a_guest_that_is_not_its_own_and_its_cables(self):
+        self.manager.provision_node(self.sandbox, "sbx-acc-02", template_vmid=320)
+        link = self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/1", "sbx-acc-02", "ge-0/0/1")
+        self.px.vms[self.node.vmid]["name"] = "web-01"
         before = len(self.px.calls)
-        with self.assertRaises(BackendError):
-            self.manager.provision_node(self.sandbox, "sbx-acc-02", template_vmid=320)
-        verbs = {call[0] for call in self.px.calls[before:]}
-        self.assertFalse(verbs & {"clone_vm", "create_vm", "delete_vm", "set_power"})
+        with self.assertRaises(GuardrailViolation) as caught:
+            self.manager.delete_node(self.sandbox, "sbx-acc-01")
+        self.assertIn("web-01", caught.exception.message)
+        self.assertIn("delete it in Proxmox", caught.exception.detail)
+        self.assertEqual(self.changes_since(before), set())
+        self.assertEqual([cable.bridge for cable in self.sandbox.links], [link.bridge])
+        self.assertIn("sbx-acc-01", [node.name for node in self.sandbox.nodes])
+
+    def test_a_guest_list_in_an_unknown_shape_deletes_nothing(self):
+        self.px.list_vms = mock.Mock(return_value=[{"id": f"qemu/{self.node.vmid}"}])
+        before = len(self.px.calls)
+        removed = self.manager.teardown(self.sandbox)
+        self.assertFalse(removed["complete"])
+        self.assertIn("shape", removed["failed"][0])
+        self.assertEqual(self.changes_since(before), set())
 
 
 class TestCloneSource(unittest.TestCase):

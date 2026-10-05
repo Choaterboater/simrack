@@ -120,7 +120,9 @@ class TestSandboxSubnetsStayOffTheProfile(unittest.TestCase):
         return manager, sandbox
 
     def test_a_fabric_on_a_protected_subnet_is_refused_before_mist_changes(self):
-        for protected, what in (("10.255.0.0/16", "underlay"), ("172.31.0.0/16", "router ID"), ("10.60.10.0/24", "data")):
+        """A data network is the shape's choice, so it is refused, not moved. The
+        fabric's own ranges move, so they are refused only with nowhere left."""
+        for protected, what in (("10.60.10.0/24", "data"), ("10.0.0.0/8", "underlay")):
             with self.subTest(protected=protected):
                 manager, sandbox = self.ready_to_build(protected)
                 writes_before = len(manager.mist.calls)
@@ -130,6 +132,24 @@ class TestSandboxSubnetsStayOffTheProfile(unittest.TestCase):
                 self.assertIn(protected, caught.exception.message)
                 self.assertEqual(len(manager.mist.calls), writes_before, "Mist is untouched")
                 self.assertEqual(sandbox.mist_snapshots, {}, "nothing changed, so nothing to revert")
+
+    def test_fabric_ranges_step_off_a_protected_subnet(self):
+        for protected, moved in (
+            ("10.255.0.0/16", {"underlay": "10.254.240.0/20"}),
+            ("172.31.0.0/16", {"router ID": "172.30.254.0/23", "loopback": "172.30.253.0/24"}),
+        ):
+            with self.subTest(protected=protected):
+                manager, sandbox = self.ready_to_build(protected)
+                result = manager.mist_build_fabric(sandbox)
+                options = manager.mist.evpn_topologies(sandbox.mist_site_id)[0]["evpn_options"]
+                used = {
+                    "underlay": options["underlay"]["subnet"],
+                    "router ID": options["auto_router_id_subnet"],
+                    "loopback": options["auto_loopback_subnet"],
+                }
+                self.assertEqual({what: used[what] for what in moved}, moved)
+                for what, cidr in moved.items():
+                    self.assertTrue(any(what in note and protected in note and cidr in note for note in result["notes"]), result["notes"])
 
     def test_a_fabric_clear_of_the_profile_builds(self):
         manager, sandbox = self.ready_to_build("10.255.240.0/20")

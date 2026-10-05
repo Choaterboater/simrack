@@ -14,7 +14,7 @@ import threading
 from unittest import mock
 
 from simrack.access import POOL
-from simrack.config import PROFILE_FILE, Settings
+from simrack.config import PROFILE_FILE, SANDBOX_BRIDGE_PREFIX, Settings
 from simrack.errors import BackendError
 from simrack.service import SandboxManager
 
@@ -73,6 +73,8 @@ class FakeProxmox:
         token: str = "fake",
     ) -> None:
         self.token = token
+        #: hostnet opens LACP only on a tap in a bridge with the lab profile's prefix.
+        self.bridge_prefix = SANDBOX_BRIDGE_PREFIX
         #: What the token holds: one set on every path, or an ACL of path -> set.
         self.privileges = privileges
         #: Resource pools and the guests in them. The setup commands made SimRack's.
@@ -100,6 +102,7 @@ class FakeProxmox:
     def use(self, settings):
         """The token the setup page saved; the fake answers whatever it is."""
         self.token = settings.pve_token
+        self.bridge_prefix = settings.sandbox_bridge_prefix
 
     @staticmethod
     def mac(vmid, index):
@@ -144,11 +147,15 @@ class FakeProxmox:
             )
 
     def _may_make(self, vmid, pool):
-        """A new guest needs VM.Allocate on its vmid or on the pool it goes in."""
+        """A new guest needs VM.Allocate on its vmid or on the pool it goes in, and a
+        vmid no guest has: VMs and containers share one set (check_vmid_unused)."""
         if pool not in self.pools:
             raise BackendError("Proxmox API call failed (403).", detail=f"pool '{pool}' does not exist", status=403)
         if "VM.Allocate" not in self.held(f"/pool/{pool}"):
             self._check(f"/vms/{vmid}", "VM.Allocate")
+        for kind, guests in (("VM", self.vms), ("CT", self.containers)):
+            if int(vmid) in guests:
+                raise BackendError("Proxmox API call failed (500).", detail=f"{kind} {int(vmid)} already exists on node 'pve1'", status=500)
 
     def _may_set(self, vmid, fields, pool=None):
         for key in fields:
@@ -194,9 +201,6 @@ class FakeProxmox:
         if int(vmid) in self.vms:
             self._check(f"/vms/{int(vmid)}", "VM.Audit")
         return dict(self.vms.get(int(vmid), {}))
-
-    def get_network(self):
-        return list(self.networks.values())
 
     def list_lxc(self):
         self._need_token()
@@ -320,7 +324,7 @@ class FakeProxmox:
         self._log("tune_port", vmid, net_index=net_index)
         vm = self.vms.get(int(vmid), {})
         bridge = re.search(r"bridge=([^,]+)", vm.get(f"net{net_index}") or "")
-        if vm.get("status") != "running" or not bridge or not bridge.group(1).startswith("sbx"):
+        if vm.get("status") != "running" or not bridge or not bridge.group(1).startswith(self.bridge_prefix):
             return False
         self.lacp_open.add((int(vmid), int(net_index)))
         return True
@@ -345,11 +349,6 @@ class FakeProxmox:
         if snapshot:
             self.vms[int(vmid)] = dict(snapshot["config"])
         return "UPID:x"
-
-    def delete_snapshot(self, vmid, name):
-        self._check(f"/vms/{int(vmid)}", "VM.Snapshot")
-        self.snapshots.get(int(vmid), {}).pop(name, None)
-        return ""
 
     # -- assertions helpers -----------------------------------------------------
     def called(self, name):
@@ -785,11 +784,9 @@ def lab_settings(tmpdir: str, *, profile: str = LAB_PROFILE, **overrides) -> Set
 
 def make_manager(tmpdir: str, *, proxmox=None, mist=None, **settings_kwargs) -> SandboxManager:
     settings = lab_settings(tmpdir, **{"pve_token": "fake", "mist_token": "fake-token", **settings_kwargs})
-    return SandboxManager(
-        settings,
-        proxmox=proxmox or FakeProxmox(),
-        mist=mist or FakeMist(),
-    )
+    proxmox = proxmox or FakeProxmox()
+    proxmox.use(settings)  # as the service builds its Proxmox client from the settings
+    return SandboxManager(settings, proxmox=proxmox, mist=mist or FakeMist())
 
 
 @contextlib.contextmanager

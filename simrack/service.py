@@ -39,14 +39,12 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _bridge_name(a_vmid: int, b_vmid: int, a_port: str, b_port: str) -> str:
+def _bridge_name(prefix: str, a_vmid: int, b_vmid: int, a_port: str, b_port: str) -> str:
     """One bridge per cable, including the ports, so two cables between the same
     pair of switches get different bridges, and the name does not depend on which
-    end is named first. Linux caps interface names at 15."""
+    end is named first. The lab profile keeps it within Linux's 15 characters."""
     (low, pa), (high, pb) = sorted(((int(a_vmid), int(a_port.split("/")[-1])), (int(b_vmid), int(b_port.split("/")[-1]))))
-    if low == high:
-        return f"sbx{low}_{pa}{pb}_x"[:15]
-    return f"sbx{low}_{high}_{pa}{pb}"[:15]
+    return f"{prefix}{low}_{high}_{pa}{pb}"
 
 
 def _net_index(port: str) -> int:
@@ -572,7 +570,7 @@ class SandboxManager:
         except Exception:
             if created:
                 try:
-                    self._destroy_vm(vmid)
+                    self._destroy_vm(vmid, name)
                 except LabError:
                     pass
             raise
@@ -636,8 +634,9 @@ class SandboxManager:
         used = {node.vmid for other in self.sandboxes.values() for node in other.nodes}
         used |= set(self.settings.production_vmids) | set(self.settings.production_lxc)
         # No guessing: a vmid picked from a partial list could already be someone's guest.
+        # VMs and containers share one set of vmids, so both lists count.
         try:
-            used |= {int(vm["vmid"]) for vm in self.proxmox.list_vms()}
+            used |= {int(guest["vmid"]) for guest in (*self.proxmox.list_vms(), *self.proxmox.list_lxc())}
         except (KeyError, TypeError, ValueError) as error:
             raise BackendError(
                 "Proxmox listed its guests in a shape SimRack does not know.",
@@ -667,16 +666,35 @@ class SandboxManager:
             "or widen [management] pool in the lab profile.",
         )
 
-    def _vm_exists(self, vmid: int) -> bool:
+    def _guest(self, vmid: int) -> dict | None:
+        """The VM Proxmox has at this vmid, read from the full list, or None."""
         try:
-            return int(vmid) in {int(vm["vmid"]) for vm in self.proxmox.list_vms()}
-        except (KeyError, TypeError, ValueError):
-            return True
+            guests = {int(vm["vmid"]): vm for vm in self.proxmox.list_vms()}
+        except (KeyError, TypeError, ValueError) as error:
+            raise BackendError(
+                "Proxmox listed its guests in a shape SimRack does not know.",
+                detail="SimRack deletes a guest only after it has checked the guest's name, so it deleted nothing.",
+            ) from error
+        return guests.get(int(vmid))
 
-    def _destroy_vm(self, vmid: int) -> None:
-        """Stop (PVE refuses to delete a running guest), then delete and wait."""
+    def _own_guest(self, vmid: int, name: str) -> dict | None:
+        """The guest SimRack made at this vmid, or None once it is gone. Refuses a
+        guest Proxmox knows by another name: renamed, or another guest in its place."""
         self.guard.check_vmid(vmid)
-        if not self._vm_exists(vmid):
+        guest = self._guest(vmid)
+        if guest is not None and guest.get("name") != name:
+            other = guest.get("name") or "a guest with no name"
+            raise GuardrailViolation(
+                f"vmid {vmid} is {other} in Proxmox now, not {name}.",
+                detail="Something outside SimRack renamed it or put another guest there. SimRack deletes "
+                f"only guests it made, so it left this one alone and kept {name} in the sandbox. "
+                "If it should go, delete it in Proxmox, then try again.",
+            )
+        return guest
+
+    def _destroy_vm(self, vmid: int, name: str) -> None:
+        """Stop (PVE refuses to delete a running guest), then delete and wait."""
+        if self._own_guest(vmid, name) is None:
             return
         if self.proxmox.vm_status(vmid).get("status") == "running":
             self.proxmox.wait_task(self.proxmox.set_power(vmid, "stop", timeout=60), timeout=120)
@@ -687,7 +705,7 @@ class SandboxManager:
         clean = True
         for node in sandbox.nodes:
             try:
-                self._destroy_vm(node.vmid)
+                self._destroy_vm(node.vmid, node.name)
             except LabError:
                 clean = False
         for link in sandbox.links:
@@ -722,10 +740,12 @@ class SandboxManager:
     def delete_node(self, sandbox: Sandbox, name: str, *, purge: bool = True) -> None:
         self.access.check_lab()
         node = self.guard.check_node_is_sandbox(sandbox, name)
+        if purge:
+            self._own_guest(node.vmid, node.name)  # before any cable moves, so a refusal changes nothing
         for link in [cable for cable in sandbox.links if name in (cable.a_node, cable.b_node)]:
             self.remove_cable(sandbox, link.bridge, save=False)
         if purge:
-            self._destroy_vm(node.vmid)
+            self._destroy_vm(node.vmid, node.name)
         sandbox.nodes = [n for n in sandbox.nodes if n.name != name]
         sandbox.notes.append(f"Deleted {name} (vmid {node.vmid})")
         self._save(sandbox)
@@ -823,16 +843,10 @@ class SandboxManager:
                         detail="Unplug it first, or use a different port.",
                     )
 
-        link = Link(
-            a_node=a_node,
-            a_port=a_port,
-            b_node=b_node,
-            b_port=b_port,
-            bridge=_bridge_name(node_a.vmid, node_b.vmid, a_port, b_port),
-        )
-        self.guard.check_bridge(link.bridge)
-        if any(existing.bridge == link.bridge for existing in sandbox.links):
-            raise GuardrailViolation(f"Bridge {link.bridge} is already in use.", detail="Pick different ports.")
+        bridge = self.guard.check_bridge(_bridge_name(self.settings.sandbox_bridge_prefix, node_a.vmid, node_b.vmid, a_port, b_port))
+        if any(existing.bridge == bridge for existing in sandbox.links):
+            raise GuardrailViolation(f"Bridge {bridge} is already in use.", detail="Pick different ports.")
+        link = Link(a_node=a_node, a_port=a_port, b_node=b_node, b_port=b_port, bridge=bridge)
         self.proxmox.create_bridge(link.bridge, mtu=self.settings.fabric_mtu)
 
         self._attach(sandbox, node_a, a_port, link.bridge)
@@ -1646,7 +1660,7 @@ class SandboxManager:
         # Guests first: deleting them drops their taps, so no NIC hot-unplug is needed.
         for node in list(sandbox.nodes):
             try:
-                self._destroy_vm(node.vmid)
+                self._destroy_vm(node.vmid, node.name)
                 removed["nodes"].append(node.name)
                 sandbox.nodes = [n for n in sandbox.nodes if n.name != node.name]
             except LabError as error:

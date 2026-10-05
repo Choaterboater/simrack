@@ -69,7 +69,7 @@ Changes have run only against fakes so far: watch the first real one end to end.
 - Static out-of-band management needs `use_mgmt_vrf: true`, or the switch loses the cloud.
 - One cable, one bridge, one /31; never a shared transit VLAN.
 - Bridges in files that `/etc/network/interfaces` sources are invisible to the Proxmox API (ADVICE, section 7).
-- Protecting one of SimRack's fixed sandbox ranges blocks fabric builds (README, The safety model).
+- A shape network on a protected subnet refuses the fabric build; move the shape's network, since fabric ranges step clear on their own (README, The safety model).
 - A start from the Proxmox GUI keeps LACP only if the template carries `deploy/simrack-sbx.sh`. It matches `sbx*`: a new `bridge_prefix` needs it changed too.
 - Mist "certificate verify failed" means the network inspects TLS: add its CA to the host's trust store; never turn checks off.
 

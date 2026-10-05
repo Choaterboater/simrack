@@ -8,7 +8,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from .config import IMAGE_PATTERNS, Settings
+from .config import IFNAME_MAX, IMAGE_PATTERNS, Settings
 from .errors import GuardrailViolation
 from .models import Node, Sandbox
 
@@ -77,6 +77,11 @@ class Guardrails:
             raise GuardrailViolation(
                 f"bridge {name} is not a sandbox bridge.",
                 detail=f"Sandbox bridges must start with {self.settings.sandbox_bridge_prefix!r}.",
+            )
+        if len(name) > IFNAME_MAX:
+            raise GuardrailViolation(
+                f"bridge {name} is {len(name)} characters, and Linux allows {IFNAME_MAX}.",
+                detail="Use a shorter [sandbox] bridge_prefix, or lower sandbox vmids, on SimRack's setup page.",
             )
         return name
 

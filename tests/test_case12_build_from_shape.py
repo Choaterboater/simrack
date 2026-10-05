@@ -142,9 +142,9 @@ class TestSwitchPorts(Base):
         self.assertEqual(self.px.calls, [])
 
     def test_a_bridge_name_does_not_depend_on_which_end_is_named_first(self):
-        self.assertEqual(_bridge_name(321, 322, "ge-0/0/2", "ge-0/0/3"), "sbx321_322_23")
-        self.assertEqual(_bridge_name(322, 321, "ge-0/0/3", "ge-0/0/2"), "sbx321_322_23")
-        self.assertEqual(_bridge_name(322, 321, "ge-0/0/2", "ge-0/0/3"), "sbx321_322_32")
+        self.assertEqual(_bridge_name("sbx", 321, 322, "ge-0/0/2", "ge-0/0/3"), "sbx321_322_23")
+        self.assertEqual(_bridge_name("sbx", 322, 321, "ge-0/0/3", "ge-0/0/2"), "sbx321_322_23")
+        self.assertEqual(_bridge_name("sbx", 322, 321, "ge-0/0/2", "ge-0/0/3"), "sbx321_322_32")
 
     def test_two_sandboxes_get_their_own_addresses_and_site_names(self):
         a = self.manager.create_sandbox("cust-a", "collapsed-core", template_vmid=320, with_mist_site=True)

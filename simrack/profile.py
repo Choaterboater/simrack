@@ -12,9 +12,11 @@ from __future__ import annotations
 import difflib
 import ipaddress
 import json
+import re
 import tomllib
 
 from .config import (
+    IFNAME_MAX,
     PARK_BRIDGE,
     SANDBOX_BRIDGE_PREFIX,
     SANDBOX_LXC_END,
@@ -129,6 +131,7 @@ def profile_values(raw: dict, path: str = "", hint: str = HINT) -> dict:
                 values[field] = value
 
     _check_pool_inside(values["mgmt_pool"], values["mgmt_cidr"], fail)
+    _check_bridges(values, raw.get("sandbox", {}), fail)
     return values
 
 
@@ -243,3 +246,26 @@ def _check_pool_inside(pool: str, cidr: str, fail) -> None:
     network = ipaddress.ip_network(cidr)
     if any(ipaddress.IPv4Address(part) not in network for part in pool.split("-")):
         raise fail(f"management.pool {pool} is not inside management.cidr {cidr}.")
+
+
+def _check_bridges(values: dict, given: dict, fail) -> None:
+    """A cable bridge is <prefix><vmid>_<vmid>_<ports>, so the prefix and the highest
+    sandbox vmid share Linux's 15 characters. The park bridge is the prefix and a
+    word that starts with a letter, so it is never a cable's name."""
+    prefix = values["sandbox_bridge_prefix"]
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", prefix):
+        raise fail(f"sandbox.bridge_prefix {prefix!r} must be a letter and then letters or digits, like sbx.")
+    key, top = max(("sandbox.vmids", values["sandbox_vmid_end"]), ("sandbox.lxc", values["sandbox_lxc_end"]), key=lambda pair: pair[1])
+    widest = f"{prefix}{top - 1}_{top}_99"
+    if len(widest) > IFNAME_MAX:
+        raise fail(
+            f"sandbox.bridge_prefix {prefix!r} and {key} up to {top} make cable bridges like {widest}, "
+            f"{len(widest)} characters, and Linux allows {IFNAME_MAX}. Use a shorter prefix or lower vmids."
+        )
+    if "park_bridge" not in given:
+        values["park_bridge"] = f"{prefix}park"
+    park = values["park_bridge"]
+    if not park.startswith(prefix) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", park[len(prefix):]):
+        raise fail(f"sandbox.park_bridge {park!r} must be the bridge prefix {prefix!r} and then a word that starts with a letter, like {prefix}park.")
+    if len(park) > IFNAME_MAX:
+        raise fail(f"sandbox.park_bridge {park!r} is {len(park)} characters, and Linux allows {IFNAME_MAX}.")

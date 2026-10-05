@@ -525,7 +525,7 @@ function labHtml(page) {
         <details data-key="sbx-adv"><summary>Advanced</summary>
           <div class="fields two">
             ${field("sandbox.bridge_prefix", "Bridge name prefix", sb.bridge_prefix, ` placeholder="sbx"`)}
-            ${field("sandbox.park_bridge", "Parking bridge", sb.park_bridge, ` placeholder="sbxpark"`)}
+            ${field("sandbox.park_bridge", "Parking bridge", sb.park_bridge, ` placeholder="${esc((sb.bridge_prefix || "sbx") + "park")}"`)}
           </div>
         </details>
       </fieldset>

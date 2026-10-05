@@ -8,11 +8,11 @@ that are missing when it starts (see SandboxManager.ensure_bridges).
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
 
+from .config import IFNAME_MAX
 from .errors import BackendError, GuardrailViolation
 
 #: Bridge-level mask, same as the live fabric (0xfff8): pass LLDP and friends.
@@ -20,13 +20,19 @@ BRIDGE_GROUP_FWD_MASK = 65528
 #: Per-port mask on each tap: LLDP (bit 14) + LACP (bit 2). Bit 2 is refused at bridge level.
 PORT_GROUP_FWD_MASK = 16388
 
-_NAME = re.compile(r"^sbx[A-Za-z0-9_]{1,12}$")
+_NAME = re.compile(rf"[A-Za-z][A-Za-z0-9_]{{1,{IFNAME_MAX - 1}}}")
 _SYS = "/sys/class/net"
 
 
-def _check(name: str) -> str:
-    if not _NAME.fullmatch(name or ""):
-        raise GuardrailViolation(f"{name!r} is not a sandbox bridge name.", detail="Sandbox bridges are sbx + up to 12 letters, digits or _.")
+def _check(name: str, prefix: str) -> str:
+    """Only a bridge named with the lab profile's sandbox prefix, within Linux's limit."""
+    if not prefix:
+        raise GuardrailViolation(f"{name!r} is not a sandbox bridge name.", detail="SimRack has no sandbox bridge prefix, so it makes no bridges.")
+    if not (name or "").startswith(prefix) or len(name) == len(prefix) or not _NAME.fullmatch(name):
+        raise GuardrailViolation(
+            f"{name!r} is not a sandbox bridge name.",
+            detail=f"Sandbox bridges are {prefix} and then letters, digits or _, {IFNAME_MAX} characters at most.",
+        )
     return name
 
 
@@ -45,38 +51,30 @@ def _write(path: str, value: int) -> None:
         handle.write(str(value))
 
 
-def list_bridges() -> list[dict]:
-    out = _ip("-j", "link", "show", "type", "bridge")
-    try:
-        links = json.loads(out or "[]")
-    except json.JSONDecodeError:
-        links = []
-    return [{"iface": link.get("ifname"), "type": "bridge", "mtu": link.get("mtu")} for link in links]
-
-
 def exists(name: str) -> bool:
     return os.path.isdir(f"{_SYS}/{name}/bridge")
 
 
-def create(name: str, mtu: int) -> None:
-    _check(name)
+def create(name: str, mtu: int, *, prefix: str) -> None:
+    _check(name, prefix)
     if not exists(name):
         _ip("link", "add", "name", name, "mtu", str(int(mtu)), "type", "bridge", "stp_state", "0")
     _write(f"{_SYS}/{name}/bridge/group_fwd_mask", BRIDGE_GROUP_FWD_MASK)
     _ip("link", "set", "dev", name, "up")
 
 
-def delete(name: str) -> None:
-    _check(name)
+def delete(name: str, *, prefix: str) -> None:
+    _check(name, prefix)
     if exists(name):
         _ip("link", "del", "dev", name)
 
 
-def tune_port(vmid: int, net_index: int) -> bool:
-    """Let LACP through on a running guest's tap. False if the tap is not there."""
+def tune_port(vmid: int, net_index: int, *, prefix: str) -> bool:
+    """Let LACP through on a running guest's tap. False if the tap is not there,
+    or is not in a sandbox bridge."""
     tap = f"{_SYS}/tap{int(vmid)}i{int(net_index)}"
     master = os.path.realpath(f"{tap}/brport/bridge")
-    if not os.path.isdir(tap) or not os.path.basename(master).startswith("sbx"):
+    if not prefix or not os.path.isdir(tap) or not os.path.basename(master).startswith(prefix):
         return False
     _write(f"{tap}/brport/group_fwd_mask", PORT_GROUP_FWD_MASK)
     return True

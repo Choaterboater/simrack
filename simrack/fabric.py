@@ -28,6 +28,8 @@ GATEWAY_ROLES = {"edge": ("access",), "core": ("core", "collapsed-core"), "distr
 SAFE_UNDERLAY = "10.255.224.0/20"
 SAFE_ROUTER_IDS = "172.31.0.0/23"
 SAFE_LOOPBACKS = "172.31.2.0/24"
+#: A usual range that is taken steps down, one of its own size at a time, inside these.
+PRIVATE_BLOCKS = tuple(ipaddress.ip_network(block) for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 DEFAULT_AS_BASE = 65001
 UPLINK = "evpn_uplink"
 DOWNLINK = "evpn_downlink"
@@ -40,22 +42,57 @@ def normalise_mac(text) -> str:
     return re.sub(r"[^0-9a-f]", "", str(text or "").lower())
 
 
-def _safe_subnet(value, fallback: str, what: str, notes: list[str], protected=()) -> str:
-    if value in (None, ""):
-        return fallback
-    try:
-        net = ipaddress.ip_network(str(value), strict=False)
-    except ValueError:
-        notes.append(f"The {what} subnet {value!r} is not a subnet, so the fabric uses {fallback}.")
-        return fallback
-    if net.version != 4:
-        notes.append(f"The {what} subnet {value} is not IPv4, so the fabric uses {fallback}.")
-        return fallback
-    for live in protected:
-        if net.overlaps(ipaddress.ip_network(live)):
-            notes.append(f"The {what} subnet {value} overlaps the live lab {live}, so the fabric uses {fallback}.")
-            return fallback
-    return str(net)
+def _clash(net, avoid: dict) -> str | None:
+    return next((label for label, other in avoid.items() if net.overlaps(other)), None)
+
+
+def _free_subnet(start: str, avoid: dict) -> str | None:
+    """``start``, or the nearest subnet its size below it in its private block
+    that overlaps nothing in ``avoid``. None when every one does."""
+    first = ipaddress.ip_network(start)
+    block = next((block for block in PRIVATE_BLOCKS if first.subnet_of(block)), first)
+    for address in range(int(first.network_address), int(block.network_address) - 1, -first.num_addresses):
+        candidate = ipaddress.ip_network((address, first.prefixlen))
+        if _clash(candidate, avoid) is None:
+            return str(candidate)
+    return None
+
+
+def _fabric_subnets(wanted: dict, avoid: dict, notes: list[str]) -> dict:
+    """Each fabric range (``what``: (the shape's value, the usual range)). The
+    shape's own settle first when usable; the rest step clear of ``avoid`` (label
+    to network) and of every range settled before them."""
+    avoid, settled, why = dict(avoid), {}, {}
+    for what, (value, _) in wanted.items():
+        if value in (None, ""):
+            continue
+        try:
+            net = ipaddress.ip_network(str(value), strict=False)
+        except ValueError:
+            why[what] = f"The {what} subnet {value!r} is not a subnet"
+            continue
+        clash = _clash(net, avoid) if net.version == 4 else None
+        if net.version != 4:
+            why[what] = f"The {what} subnet {value} is not IPv4"
+        elif clash:
+            why[what] = f"The {what} subnet {value} overlaps {clash}"
+        else:
+            settled[what] = str(net)
+            avoid[f"the {what} subnet {net}"] = net
+    for what, (_, usual) in wanted.items():
+        if what in settled:
+            continue
+        clash = _clash(ipaddress.ip_network(usual), avoid)
+        reason = why.get(what) or (clash and f"The usual {what} subnet {usual} overlaps {clash}")
+        picked = _free_subnet(usual, avoid)
+        if picked is None:
+            notes.append(f"{reason}, and no other {what} subnet that size is free, so the fabric keeps {usual}.")
+            picked = usual
+        elif reason:
+            notes.append(f"{reason}, so the fabric uses {picked}.")
+        settled[what] = picked
+        avoid[f"the {what} subnet {picked}"] = ipaddress.ip_network(picked)
+    return settled
 
 
 def _routed_at(recipe, roles: dict, notes: list[str]) -> str:
@@ -230,15 +267,30 @@ def topology_body(sandbox, macs: dict, pods=None, protected=()) -> tuple[dict, d
         if conf:
             configs[macs[name]] = conf
 
+    avoid = {f"the live lab {live}": ipaddress.ip_network(live) for live in protected}
+    for network in recipe.networks:
+        try:
+            avoid[f"the {network.name} network {network.cidr}"] = ipaddress.ip_network(network.cidr, strict=False)
+        except ValueError:
+            continue  # the guardrail refuses it before anything is sent
+    subnets = _fabric_subnets(
+        {
+            "underlay": (recipe.underlay_cidr, SAFE_UNDERLAY),
+            "router ID": (recipe.loopback_cidr, SAFE_ROUTER_IDS),
+            "loopback": (getattr(recipe, "auto_loopback_cidr", None), SAFE_LOOPBACKS),
+        },
+        avoid,
+        notes,
+    )
     options = {
         "routed_at": routed_at,
         "overlay": {"as": recipe.overlay_as},
         "underlay": {
             "as_base": recipe.underlay_as_base or DEFAULT_AS_BASE,
-            "subnet": _safe_subnet(recipe.underlay_cidr, SAFE_UNDERLAY, "underlay", notes, protected),
+            "subnet": subnets["underlay"],
         },
-        "auto_router_id_subnet": _safe_subnet(recipe.loopback_cidr, SAFE_ROUTER_IDS, "router ID", notes, protected),
-        "auto_loopback_subnet": _safe_subnet(getattr(recipe, "auto_loopback_cidr", None), SAFE_LOOPBACKS, "loopback", notes, protected),
+        "auto_router_id_subnet": subnets["router ID"],
+        "auto_loopback_subnet": subnets["loopback"],
     }
     body = {
         "name": sandbox.name,

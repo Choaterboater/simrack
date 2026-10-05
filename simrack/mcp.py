@@ -179,6 +179,7 @@ TOOLS = (
         "POST",
         "/fabric/check",
         body={"repair": False},
+        mist=True,
     ),
     Tool(
         "build_sandbox",
@@ -276,6 +277,7 @@ TOOLS = (
         gate="lab",
         kind="change",
         body={"repair": True},
+        mist=True,
     ),
     _sandbox_tool(
         "save_point",
