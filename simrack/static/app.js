@@ -9,7 +9,8 @@ let S = null;                                   // last /api/state
 let sel = localStorage.getItem("lf_sel") || ""; // selected sandbox
 let focusItem = null;                           // {t:"node",id} | {t:"cable",id}
 let busy = false, creating = false, authNeeded = false;
-let token = localStorage.getItem("simrack_token") || "";
+let token = sessionStorage.getItem("simrack_token") || ""; // forgotten when the tab closes
+localStorage.removeItem("simrack_token"); // older versions kept it on disk
 const log = [];
 const consoleOut = {};
 let moveFrom = {};                              // {bridge,node}: which end the move form is moving
@@ -257,8 +258,8 @@ function renderBanner(err) {
     if ($('[data-form="token"]', b)) return;
     b.className = "banner err"; b.hidden = false;
     b._html = "";
-    b.innerHTML = `This SimRack needs a bearer token.
-      <form class="actions" data-form="token"><input name="token" type="password" placeholder="SIMRACK_TOKEN" autocomplete="off"><button class="sm" type="submit">Save token</button></form>`;
+    b.innerHTML = `This SimRack needs a bearer token. This tab keeps it until it closes.
+      <form class="actions" data-form="token"><input name="token" type="password" placeholder="SIMRACK_TOKEN" autocomplete="off"><button class="sm" type="submit">Use token</button></form>`;
     return;
   }
   const fix = view === "setup" ? "" : ` <button class="sm" data-act="setup">Open setup</button>`;
@@ -1619,7 +1620,7 @@ document.addEventListener("submit", e => {
   if (btn && btn.disabled) return;
   const v = name => (f.elements[name] ? f.elements[name].value.trim() : "");
   switch (kind) {
-    case "token": token = v("token"); localStorage.setItem("simrack_token", token); authNeeded = false; refresh(true); break;
+    case "token": token = v("token"); sessionStorage.setItem("simrack_token", token); authNeeded = false; refresh(true); break;
     case "import": importShape(f, btn); break;
     case "setup-tokens": saveTokens(f, btn); break;
     case "setup": saveProfile(f, btn); break;

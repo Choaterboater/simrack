@@ -311,8 +311,9 @@ first build.
 To listen beyond 127.0.0.1, put `SIMRACK_TOKEN=<long random string>` in
 `/opt/simrack/simrack.env` (mode 600; the unit reads it when it exists), then
 run `systemctl edit simrack` and give the unit an empty `ExecStart=` line
-followed by its own `ExecStart=` with the new `--host`. An SSH tunnel is still
-the better way in.
+followed by its own `ExecStart=` with the new `--host`. The page asks for the
+token once per browser tab and forgets it when the tab closes. An SSH tunnel is
+still the better way in.
 
 ## MCP
 

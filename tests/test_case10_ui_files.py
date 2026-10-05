@@ -6,6 +6,7 @@ else on disk can be fetched. theme.js is the one script in the head: it picks
 day or dark before the first paint, so a remembered choice never flashes.
 """
 import os
+import re
 import threading
 import unittest
 import urllib.error
@@ -65,6 +66,12 @@ class TestUiFiles(unittest.TestCase):
         for path in ("/", "/index.html", *(path for path, _ in ASSETS)):
             self.assertEqual(self._get(path)[0], 200, path)
         self.assertEqual(self._get("/api/state")[0], 401)
+
+    def test_the_browser_keeps_the_token_only_until_the_tab_closes(self):
+        with open(os.path.join(STATIC, "app.js"), encoding="utf-8") as handle:
+            uses = sorted(set(re.findall(r'(\w+Storage)\.(\w+)\("simrack_token"', handle.read())))
+        # localStorage only clears a token an older SimRack left on disk.
+        self.assertEqual(uses, [("localStorage", "removeItem"), ("sessionStorage", "getItem"), ("sessionStorage", "setItem")])
 
     def test_nothing_else_on_disk_is_served(self):
         for path in ("/static/app.js", "/simrack/ui.py", "/app.js/../ui.py", "/app.js.map", "/%2e%2e/simrack.env", "/state/sandboxes.json"):
