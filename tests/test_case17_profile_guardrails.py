@@ -86,6 +86,9 @@ BUILD_LAB = """
 [proxmox]
 node = "pve-lab"
 
+[mist]
+org_id = "org-example"
+
 [management]
 bridge = "vmbr0"
 cidr = "192.0.2.0/24"

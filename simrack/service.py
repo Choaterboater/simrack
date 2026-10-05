@@ -15,7 +15,7 @@ import time
 from typing import Callable
 
 from . import fabric
-from .access import Access, describe
+from .access import POOL, Access, describe, raise_if
 from .config import Settings
 from .console import SerialConsole, mist_lines
 from .console import adopt as console_adopt
@@ -506,6 +506,8 @@ class SandboxManager:
                 detail="SimRack clones only a Proxmox template. Make one with qm template <vmid> "
                 "from a vJunos that has never booted (ADVICE.md, step 2).",
             )
+        if template_vmid and not image:
+            self.access.check_clone(template_vmid)
 
         start_id = self.settings.sandbox_lxc_start if kind == "client" else self.settings.sandbox_vmid_start
         end_id = self.settings.sandbox_lxc_end if kind == "client" else self.settings.sandbox_vmid_end
@@ -545,6 +547,7 @@ class SandboxManager:
                 upid = self.proxmox.create_vm(
                     vmid,
                     name,
+                    pool=POOL,
                     memory_mb=memory,
                     cores=4,
                     storage=storage,
@@ -559,7 +562,7 @@ class SandboxManager:
                 created = True
                 self.proxmox.wait_task(upid, timeout=1800)
             else:
-                upid = self.proxmox.clone_vm(template_vmid, vmid, name=name, full=True)
+                upid = self.proxmox.clone_vm(template_vmid, vmid, name=name, pool=POOL, full=True)
                 created = True
                 self.proxmox.wait_task(upid, timeout=1800)
                 nics = self._switch_nics(self.proxmox.get_vm(vmid)) if kind in PORT_KINDS else {}
@@ -1316,10 +1319,16 @@ class SandboxManager:
     # -- check cabling ------------------------------------------------------------
     # Three views of every cable: Proxmox (the bridge and both NICs), LLDP (what
     # each switch sees on the port, as Mist last heard it) and the Mist topology.
-    # Only the Proxmox side is ever fixed, and only when writes are on.
+    # Only the Proxmox side is ever fixed. ``repair`` True fixes it, or is refused
+    # when SimRack may not change the lab; False only looks; None (the web page's
+    # button) fixes it whenever SimRack may.
 
-    def fabric_check(self, sandbox: Sandbox) -> dict:
-        repair = self.access.lab_refusal() is None
+    def fabric_check(self, sandbox: Sandbox, repair: bool | None = None) -> dict:
+        refusal = self.access.lab_refusal()
+        if repair:
+            raise_if(refusal)
+        look_only = repair is False
+        repair = not look_only and refusal is None
         notes: list[str] = []
         nodes = {n.name: n for n in sandbox.nodes}
         configs: dict[int, dict | None] = {}
@@ -1342,7 +1351,12 @@ class SandboxManager:
                 sandbox.notes.append(f"Check cabling made the park bridge {park} again")
             else:
                 park_missing = True
-                notes.append(f"The park bridge {park} is missing, so the switches cannot start. {self.access.lab_refusal()} Check again once SimRack may change the lab, and it makes the bridge.")
+                then = (
+                    "Fixing the cabling makes it again."
+                    if look_only
+                    else f"{describe(refusal)} Check again once SimRack may change the lab, and it makes the bridge."
+                )
+                notes.append(f"The park bridge {park} is missing, so the switches cannot start. {then}")
 
         rows = [self._check_cable(sandbox, link, nodes, config, repair) for link in sandbox.links]
         parked, missing = self._check_strays(sandbox, config, repair)

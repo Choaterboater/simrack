@@ -419,7 +419,9 @@ function connectHtml(page) {
           <p class="note">Change it only if SimRack runs somewhere other than the Proxmox host. A new address needs the token pasted again.</p>
         </details>
         <details data-key="pve-token"${pve.set ? "" : " open"}><summary>Make a token that may do only what SimRack needs</summary>
-          <p class="note">Run these as root on the Proxmox host. The last one prints the token's ID and secret: paste that above.</p>
+          <p class="note">Run these as root on the Proxmox host. The last one prints the token's ID and secret: paste that above.
+            SimRack may change only guests in the resource pool <span class="mono">simrack</span>, where it makes every guest.
+            A template made later needs one more command; a build from it names that command.</p>
           <pre>${esc((page.proxmox_token_commands || []).join("\n"))}</pre>
           <div class="actions"><button type="button" class="sm" data-act="copy-cmds">Copy</button></div>
           <p class="note">A root token works too (<code>pveum user token add root@pam simrack --privsep 0</code>), but it may change anything on the host.</p>
@@ -503,7 +505,7 @@ function labHtml(page) {
       <fieldset class="group"><legend>Where SimRack builds</legend>
         <div class="fields two">
           ${field("proxmox.node", "Proxmox node", px.node)}
-          ${field("mist.org_id", `Mist org ID <span class="faint">· optional</span>`, mi.org_id)}
+          ${field("mist.org_id", `Mist org ID <span class="faint">· needed for Mist changes</span>`, mi.org_id)}
         </div>
       </fieldset>
       <fieldset class="group"><legend>Management <span class="faint">· where each switch's fxp0 connects</span></legend>
@@ -528,7 +530,7 @@ function labHtml(page) {
         </details>
       </fieldset>
       <fieldset class="group"><legend>Assistants <span class="faint">· through SimRack's MCP server</span></legend>
-        <p class="note">An assistant connected to SimRack can look, build sandboxes and change them. These undo work, so they stay off unless you tick them.</p>
+        <p class="note">An assistant connected to SimRack can look, build sandboxes and change them. These undo work, so the MCP server leaves them out unless you tick them. The tick only hides tools: anything holding SimRack's token can still use its API.</p>
         <label class="check"><input type="checkbox" name="assistants.risky"${as.risky === true ? " checked" : ""}> Also let it tear down sandboxes, revert, delete switches and type at a switch's console</label>
       </fieldset>
       <div class="form-err" data-setup-msg role="alert" hidden></div>

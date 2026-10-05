@@ -12,6 +12,7 @@ Proxmox and Mist still check every request themselves.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import time
 from typing import Callable
@@ -28,14 +29,30 @@ PAUSED: Refusal = (GuardrailViolation, "Changes are paused.", "Resume them from 
 
 #: Mist roles that may change an org: Super User and Network Admin.
 MIST_WRITE_ROLES = ("admin", "write")
+#: Mist roles that may only look: Observer, Helpdesk and Installer, as Casper counts them.
+MIST_READ_ROLES = ("read", "helpdesk", "installer")
+#: Where a user token's role can sit above the org, and how a refusal names it.
+MIST_ABOVE_ORG = {"msp": "through its MSP", "orggroup": "through an org group"}
 
-#: What SimRack does to a sandbox guest, as Proxmox checks it: create, clone,
-#: delete, set memory, CPU, disks, CD-ROM, NICs and options, power, snapshot.
-#: VM.Snapshot also allows rollback.
+#: A Proxmox API token as the setup page takes it: user@realm!name=secret.
+PROXMOX_TOKEN = re.compile(r"(?P<user>[^\s=:/]+@[A-Za-z][\w.-]*)![A-Za-z][\w.-]*=\S+")
+
+#: What Casper's access-check v2 shows: the kinds of place, how many, and the text it will print.
+SCOPE_KINDS = ("org", "site", "sitegroup")
+MAX_SCOPES = 64
+PLAIN = re.compile(r"[A-Za-z0-9 _.@:/+-]{1,64}")
+
+#: The Proxmox resource pool every sandbox guest is made in. SimRack's token may
+#: change only the guests in it, so it can never touch a live one.
+POOL = "simrack"
+
+#: What SimRack does to a sandbox guest, as Proxmox checks it: create (or clone
+#: into the pool), delete, set memory, CPU, disks, CD-ROM, NICs and options,
+#: power, snapshot. VM.Snapshot also allows rollback. Cloning also needs VM.Clone
+#: on the template, granted per template.
 VM_PRIVILEGES = (
     "VM.Allocate",
     "VM.Audit",
-    "VM.Clone",
     "VM.Config.CDROM",
     "VM.Config.CPU",
     "VM.Config.Disk",
@@ -51,14 +68,17 @@ VM_PRIVILEGES = (
 def required_privileges(settings: Settings) -> dict[str, tuple[str, ...]]:
     """The privileges SimRack's Proxmox token needs, by ACL path.
 
-    Sandbox bridges are made on the fly, so SDN.Use must come from the zone.
-    Bridges are host-only (hostnet), so the node needs no Sys.Modify.
+    Guests are changed only through SimRack's pool, so a live guest is never
+    reachable; every guest is only looked at. Sandbox bridges are made on the
+    fly, so SDN.Use must come from the zone. Bridges are host-only (hostnet), so
+    the node needs no Sys.Modify.
     """
     mgmt = f"/sdn/zones/localnetwork/{settings.mgmt_bridge}"
     if settings.mgmt_vlan is not None:
         mgmt += f"/{settings.mgmt_vlan}"
     return {
-        f"/vms/{settings.sandbox_vmid_start}": VM_PRIVILEGES,
+        f"/pool/{POOL}": VM_PRIVILEGES,
+        "/vms": ("VM.Audit",),
         f"/nodes/{settings.pve_node}": ("Sys.Audit",),
         "/storage/local-lvm": ("Datastore.AllocateSpace",),
         "/storage/local": ("Datastore.Audit",),
@@ -71,20 +91,39 @@ def required_privileges(settings: Settings) -> dict[str, tuple[str, ...]]:
 def token_commands(settings: Settings) -> list[str]:
     """Commands, run as root on the host, for a token that may do just what SimRack checks.
 
-    One role holds every privilege SimRack needs, granted where it checks them.
-    Sandbox guests do not exist yet, so theirs go on /vms; a grant reaches the paths below it.
+    SimRack's role goes on its pool, so the token may change only the guests made
+    there. Everywhere else it gets Proxmox's smallest built-in role: a look at
+    every guest, the node and the ISO store; space on local-lvm; the zone's
+    bridges, since sandbox bridges are named only when a sandbox is built. Each
+    template on the node may be cloned.
     """
-    needed = required_privileges(settings)
-    privileges = sorted({privilege for held in needed.values() for privilege in held})
-    paths = {"/vms" if path.startswith("/vms/") else path for path in needed}
-    grants = sorted(path for path in paths if not any(path.startswith(other + "/") for other in paths))
+    node = f"/nodes/{settings.pve_node}"
+    grants = (
+        (f"/pool/{POOL}", "SimRack"),
+        ("/vms", "PVEAuditor"),
+        (node, "PVEAuditor"),
+        ("/storage/local", "PVEAuditor"),
+        ("/storage/local-lvm", "PVEDatastoreUser"),
+        ("/sdn/zones/localnetwork", "PVESDNUser"),
+    )
+    templates = (
+        shlex.join(["pvesh", "get", f"{node}/qemu", "--output-format", "json"])
+        + """ | python3 -c 'import json, sys; print(*(vm["vmid"] for vm in json.load(sys.stdin) if vm.get("template")))'"""
+    )
     return [
-        shlex.join(["pveum", "role", "add", "SimRack", "--privs", " ".join(privileges)]),
+        shlex.join(["pveum", "pool", "add", POOL]),
+        shlex.join(["pveum", "role", "add", "SimRack", "--privs", " ".join(VM_PRIVILEGES)]),
         shlex.join(["pveum", "user", "add", "simrack@pve"]),
-        *(shlex.join(["pveum", "acl", "modify", path, "--users", "simrack@pve", "--roles", "SimRack"]) for path in grants),
+        *(shlex.join(["pveum", "acl", "modify", path, "--users", "simrack@pve", "--roles", role]) for path, role in grants),
+        f'for id in $({templates}); do {clone_command("$id")}; done',
         shlex.join(["pveum", "user", "token", "add", "simrack@pve", "simrack", "--privsep", "0", "--output-format", "json"])
         + """ | python3 -c 'import json, sys; t = json.load(sys.stdin); print(t["full-tokenid"] + "=" + t["value"])'""",
     ]
+
+
+def clone_command(template: int | str) -> str:
+    """The command, run as root on the host, that lets SimRack's token clone a template."""
+    return f"pveum acl modify /vms/{template} --users simrack@pve --roles PVETemplateUser"
 
 
 class Access:
@@ -158,6 +197,17 @@ class Access:
     def check_lab(self) -> None:
         raise_if(self.lab_refusal())
 
+    def check_clone(self, template_vmid: int) -> None:
+        """Refuse a build from a template the token may not clone, before anything is made.
+
+        Asked each time: templates come and go, and each is granted on its own.
+        """
+        if "VM.Clone" not in self.proxmox.permissions(f"/vms/{template_vmid}"):
+            raise GuardrailViolation(
+                f"The Proxmox token may not clone template {template_vmid}.",
+                detail=f"Run this as root on the Proxmox host, then build again: {clone_command(template_vmid)}",
+            )
+
     # -- Mist -------------------------------------------------------------------
 
     def mist_refusal(self) -> Refusal | None:
@@ -172,31 +222,152 @@ class Access:
                 "Mist API token is not set.",
                 "Add a Mist token on SimRack's setup page. Without one every Mist action is off.",
             )
+        if not self.settings.org_id:
+            return (
+                GuardrailViolation,
+                "Mist changes are off: no Mist org is set.",
+                "Set the Mist org ID on SimRack's setup page; SimRack changes only that org.",
+            )
         return self._remember("mist", self._ask_mist)
 
     def _ask_mist(self) -> Refusal | None:
         try:
             me = self.mist.whoami()
         except LabError as error:
-            return (BackendError, "SimRack cannot tell what the Mist token may do.", f"{error.message} {error.detail}".strip())
-        org = self.settings.org_id
-        roles = [
-            privilege.get("role")
-            for privilege in (me.get("privileges") if isinstance(me, dict) else None) or []
-            if isinstance(privilege, dict) and privilege.get("scope") == "org" and (not org or privilege.get("org_id") == org)
+            return cannot_tell(error)
+        privileges = [
+            privilege for privilege in (me.get("privileges") if isinstance(me, dict) else None) or [] if isinstance(privilege, dict)
         ]
-        if any(role in MIST_WRITE_ROLES for role in roles):
+        held = [
+            (privilege.get("role"), "")
+            for privilege in privileges
+            if privilege.get("scope") == "org" and privilege.get("org_id") == self.settings.org_id
+        ]
+        above = [privilege for privilege in privileges if privilege.get("scope") in MIST_ABOVE_ORG]
+        if above and not any(role in MIST_WRITE_ROLES for role, _ in held):
+            try:
+                org = self.mist.org(self.settings.org_id)
+            except BackendError as error:
+                if error.status not in (403, 404):
+                    return cannot_tell(error)
+                org = {}  # Mist hides an org from a token with no role on it.
+            except LabError as error:
+                return cannot_tell(error)
+            held += [(privilege.get("role"), MIST_ABOVE_ORG[privilege["scope"]]) for privilege in above if holds(privilege, org)]
+        if any(role in MIST_WRITE_ROLES for role, _ in held):
             return None
-        held = f"its role on this org is {' and '.join(sorted(set(map(str, roles))))}" if roles else "it has no role on this org"
+        roles = sorted({f"{role} {where}".strip() for role, where in held})
+        said = f"its role on this org is {' and '.join(roles)}" if roles else "it has no role on this org"
         return (
             GuardrailViolation,
-            f"Mist changes are off: {held}.",
-            "Mist lets the admin (Super User) and write (Network Admin) roles change an org. "
-            "The setup page shows how to make a token that may.",
+            f"Mist changes are off: {said}.",
+            "Mist lets the admin (Super User) and write (Network Admin) roles change an org, held on the org, "
+            "its MSP or an org group it is in. The setup page shows how to make a token that may.",
         )
 
     def check_mist(self) -> None:
         raise_if(self.mist_refusal())
+
+    # -- what the tokens may do, for an assistant's host -------------------------
+
+    def products(self) -> list[dict]:
+        """What each token may do, in Casper's access-check v2: who it is and where it may change things.
+
+        This is the tokens' own reach. A pause stops SimRack, not the tokens, so it
+        does not count here. What SimRack cannot find out is unknown, never a guess.
+        """
+        return [self._proxmox_product(), self._mist_product()]
+
+    def _proxmox_product(self) -> dict:
+        """Read-write when the token holds every privilege SimRack needs; read-only when Proxmox says it lacks one.
+
+        No role: Proxmox does not say which role gave the token its privileges.
+        """
+        product = {"product": "proxmox", "access": "unknown"}
+        if not self.settings.pve_token:
+            return {**product, "login": "missing"}
+        if not self.settings.profile_path:
+            # Only the profile names the node, bridges and storage the token needs.
+            return product
+        refusal = self._remember("proxmox", self._ask_proxmox)
+        if refusal is not None and refusal[0] is not GuardrailViolation:
+            return product
+        product["access"] = "read-only" if refusal else "read-write"
+        if user := proxmox_user(self.settings.pve_token):
+            product["identity"] = user
+        return product
+
+    def _mist_product(self) -> dict:
+        """Every place the token reaches, in any org, not only the profile's: asked afresh each time."""
+        product = {"product": "mist", "access": "unknown"}
+        if not self.mist.configured():
+            return {**product, "login": "missing"}
+        try:
+            me = self.mist.whoami()
+        except LabError:
+            return product
+        privileges = me.get("privileges") if isinstance(me, dict) else None
+        if not isinstance(privileges, list):
+            return product
+        if plain(me.get("email")):
+            product["identity"] = me["email"]
+        roles = [privilege.get("role") if isinstance(privilege, dict) else None for privilege in privileges]
+        if any(role not in MIST_WRITE_ROLES + MIST_READ_ROLES for role in roles):
+            return product
+        changes = [privilege for privilege, role in zip(privileges, roles) if role in MIST_WRITE_ROLES]
+        looks = [privilege for privilege, role in zip(privileges, roles) if role in MIST_READ_ROLES]
+        product["access"] = "read-write" if changes else "read-only"
+        if len(set(roles)) == 1:
+            product["role"] = roles[0]
+        for key, chosen in (("can_change", changes), ("read_only", looks)):
+            if places := scope_list(chosen):
+                product[key] = places
+        return product
+
+
+def cannot_tell(error: LabError) -> Refusal:
+    return (BackendError, "SimRack cannot tell what the Mist token may do.", f"{error.message} {error.detail}".strip())
+
+
+def holds(privilege: dict, org: dict) -> bool:
+    """Whether a role held on an MSP or an org group reaches the org, as GET /orgs/{id} names them."""
+    if privilege.get("scope") == "msp":
+        return bool(ids(privilege.get("msp_id")) & ids(org.get("msp_id")))
+    if privilege.get("scope") == "orggroup":
+        return bool((ids(privilege.get("orggroup_ids")) | ids(privilege.get("orggroup_id"))) & ids(org.get("orggroup_ids")))
+    return False
+
+
+def ids(value) -> set[str]:
+    """The IDs a Mist field holds, whether it is one ID or a list of them."""
+    return {item for item in (value if isinstance(value, list) else [value]) if isinstance(item, str) and item}
+
+
+def plain(value) -> bool:
+    """Whether Casper will show the text as it is."""
+    return isinstance(value, str) and PLAIN.fullmatch(value) is not None
+
+
+def proxmox_user(token: str) -> str:
+    """The Proxmox user a token belongs to, never its secret; empty when the token is not one SimRack takes."""
+    match = PROXMOX_TOKEN.fullmatch(token or "")
+    return match["user"] if match and plain(match["user"]) else ""
+
+
+def scope_list(privileges: list[dict]) -> list[dict]:
+    """The places the Mist privileges reach, as Casper lists them; empty unless every one can be listed whole."""
+    if len(privileges) > MAX_SCOPES:
+        return []
+    places = []
+    for privilege in privileges:
+        kind = privilege.get("scope")
+        if kind not in SCOPE_KINDS:
+            return []
+        place = {"kind": kind, "id": privilege.get(f"{kind}_id"), "name": privilege.get("name")}
+        if not (plain(place["id"]) and plain(place["name"])):
+            return []
+        places.append(place)
+    return places
 
 
 def raise_if(refusal: Refusal | None) -> None:

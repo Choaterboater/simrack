@@ -93,7 +93,7 @@ class TestProxmoxClient(unittest.TestCase):
 
     def test_create_vm_matches_the_live_switch_shape(self):
         client = RecordingProxmox()
-        client.create_vm(321, "sbx-acc-01", memory_mb=5120, cores=4, import_from="local:import/vj.qcow2", smbios_product="VM-VEX", cpu="host")
+        client.create_vm(321, "sbx-acc-01", pool="simrack", memory_mb=5120, cores=4, import_from="local:import/vj.qcow2", smbios_product="VM-VEX", cpu="host")
         params = client.sent[0][2]
         self.assertEqual(params["virtio0"], "local-lvm:0,import-from=local:import/vj.qcow2,iothread=1")
         self.assertEqual(params["boot"], "order=virtio0")
@@ -101,7 +101,7 @@ class TestProxmoxClient(unittest.TestCase):
         self.assertNotIn("ide2", params)
 
         client = RecordingProxmox()
-        client.create_vm(322, "sbx-iso-01", memory_mb=2048, cores=4, iso="local:iso/a.iso", disk_bus="scsi0")
+        client.create_vm(322, "sbx-iso-01", pool="simrack", memory_mb=2048, cores=4, iso="local:iso/a.iso", disk_bus="scsi0")
         params = client.sent[0][2]
         self.assertEqual(params["ide2"], "local:iso/a.iso,media=cdrom")
         self.assertEqual(params["scsi0"], "local-lvm:32,iothread=1")

@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import http.server
 import json
 import os
 import re
 import shutil
 import tempfile
+import threading
+from unittest import mock
 
+from simrack.access import POOL
 from simrack.config import PROFILE_FILE, Settings
+from simrack.errors import BackendError
 from simrack.service import SandboxManager
 
 
-#: Proxmox's built-in roles (pveum role list): what a token holds on every path.
+#: Proxmox's built-in roles (pveum role list).
 PVE_ADMINISTRATOR = frozenset(
     {
         "Datastore.Allocate", "Datastore.AllocateSpace", "Datastore.AllocateTemplate", "Datastore.Audit",
@@ -29,6 +34,27 @@ PVE_ADMINISTRATOR = frozenset(
     }
 )
 PVE_AUDITOR = frozenset({"Datastore.Audit", "Mapping.Audit", "Pool.Audit", "SDN.Audit", "Sys.Audit", "VM.Audit"})
+PVE_DATASTORE_USER = frozenset({"Datastore.AllocateSpace", "Datastore.Audit"})
+PVE_SDN_USER = frozenset({"SDN.Audit", "SDN.Use"})
+PVE_TEMPLATE_USER = frozenset({"VM.Audit", "VM.Clone"})
+BUILT_IN_ROLES = {
+    "Administrator": PVE_ADMINISTRATOR,
+    "PVEAuditor": PVE_AUDITOR,
+    "PVEDatastoreUser": PVE_DATASTORE_USER,
+    "PVESDNUser": PVE_SDN_USER,
+    "PVETemplateUser": PVE_TEMPLATE_USER,
+}
+
+#: The privilege PVE checks to set each guest config field SimRack sends
+#: (qemu-server check_vm_modify_config_perm and its serial port check).
+CONFIG_PRIVILEGES = (
+    (r"memory", "VM.Config.Memory"),
+    (r"cores|cpu|sockets", "VM.Config.CPU"),
+    (r"name|onboot|ostype", "VM.Config.Options"),
+    (r"smbios1|scsihw|serial\d+", "VM.Config.HWType"),
+    (r"boot", "VM.Config.Disk"),
+    (r"net\d+", "VM.Config.Network"),
+)
 
 
 class FakeProxmox:
@@ -43,12 +69,14 @@ class FakeProxmox:
         free_mb: int = 40000,
         templates: list[int] | None = None,
         total_mb: int = 65536,
-        privileges: frozenset = PVE_ADMINISTRATOR,
+        privileges: frozenset | dict[str, frozenset] = PVE_ADMINISTRATOR,
         token: str = "fake",
     ) -> None:
         self.token = token
-        #: What the token holds, on every path (GET /access/permissions).
+        #: What the token holds: one set on every path, or an ACL of path -> set.
         self.privileges = privileges
+        #: Resource pools and the guests in them. The setup commands made SimRack's.
+        self.pools: dict[str, set[int]] = {POOL: set()}
         self.permission_reads = 0
         self.free_mb = free_mb
         self.total_mb = total_mb
@@ -92,10 +120,55 @@ class FakeProxmox:
         vm = self.vms.get(int(vmid), {})
         return {k: v for k, v in vm.items() if re.fullmatch(r"net\d+", k)}
 
+    # -- what the token may do --------------------------------------------------
+    def held(self, path):
+        """What the token holds on ``path``, worked out as PVE does: the deepest
+        grant at or above it wins, and a guest in a pool also holds what the pool
+        grants (AccessControl::roles, RPCEnvironment::compile_acl_path)."""
+        if not isinstance(self.privileges, dict):
+            return frozenset(self.privileges)
+        above = [acl for acl in self.privileges if acl == "/" or path == acl or path.startswith(acl + "/")]
+        held = frozenset(self.privileges[max(above, key=len)]) if above else frozenset()
+        guest = re.fullmatch(r"/vms/(\d+)", path)
+        for pool, members in self.pools.items():
+            if guest and int(guest.group(1)) in members:
+                held |= self.held(f"/pool/{pool}")
+        return held
+
+    def _check(self, path, *privileges, any_of=False):
+        """Refuse as PVE's permission check does: 403, naming the path."""
+        missing = [privilege for privilege in privileges if privilege not in self.held(path)]
+        if missing and not (any_of and len(missing) < len(privileges)):
+            raise BackendError(
+                "Proxmox API call failed (403).", detail=f"Permission check failed ({path}, {', '.join(missing)})", status=403
+            )
+
+    def _may_make(self, vmid, pool):
+        """A new guest needs VM.Allocate on its vmid or on the pool it goes in."""
+        if pool not in self.pools:
+            raise BackendError("Proxmox API call failed (403).", detail=f"pool '{pool}' does not exist", status=403)
+        if "VM.Allocate" not in self.held(f"/pool/{pool}"):
+            self._check(f"/vms/{vmid}", "VM.Allocate")
+
+    def _may_set(self, vmid, fields, pool=None):
+        for key in fields:
+            privilege = next((held for pattern, held in CONFIG_PRIVILEGES if re.fullmatch(pattern, key)), None)
+            assert privilege, f"the fake does not know what PVE checks to set {key}"
+            if not (pool and privilege in self.held(f"/pool/{pool}")):
+                self._check(f"/vms/{vmid}", privilege)
+
+    def _may_use(self, nics):
+        """SDN.Use on each NIC's bridge, or on its VLAN when it has a tag (check_vnet_access)."""
+        for value in nics:
+            bridge = re.search(r"bridge=([^,]+)", value or "")
+            if bridge:
+                tag = re.search(r"tag=(\d+)", value)
+                self._check(f"/sdn/zones/localnetwork/{bridge.group(1)}" + (f"/{tag.group(1)}" if tag else ""), "SDN.Use")
+
     # -- reads ------------------------------------------------------------------
     def permissions(self, path):
         self.permission_reads += 1
-        return {privilege: 1 for privilege in self.privileges}
+        return {privilege: 1 for privilege in self.held(path)}
 
     def node_status(self):
         mib = 1024 * 1024
@@ -115,9 +188,11 @@ class FakeProxmox:
 
     def list_vms(self):
         self._need_token()
-        return list(self.vms.values())
+        return [vm for vmid, vm in self.vms.items() if "VM.Audit" in self.held(f"/vms/{vmid}")]
 
     def get_vm(self, vmid):
+        if int(vmid) in self.vms:
+            self._check(f"/vms/{int(vmid)}", "VM.Audit")
         return dict(self.vms.get(int(vmid), {}))
 
     def get_network(self):
@@ -125,7 +200,7 @@ class FakeProxmox:
 
     def list_lxc(self):
         self._need_token()
-        return list(self.containers.values())
+        return [ct for ctid, ct in self.containers.items() if "VM.Audit" in self.held(f"/vms/{ctid}")]
 
     def bridges(self):
         self._need_token()
@@ -145,16 +220,24 @@ class FakeProxmox:
 
             raise BackendError(f"Proxmox API {verb} {path} failed (500).", detail=f"only root can set '{refused[0]}' config")
 
-    def create_vm(self, vmid, name, **kwargs):
+    def create_vm(self, vmid, name, *, pool, **kwargs):
         self._refuse_root_only("POST", "/qemu", [key for key, value in kwargs.items() if value])
-        self._log("create_vm", vmid, name, **kwargs)
-        self.vms[int(vmid)] = {"vmid": int(vmid), "name": name, "config": kwargs, "status": "stopped"}
         nics = {k: v for k, v in (kwargs.get("extra") or {}).items() if re.fullmatch(r"net\d+", k)}
+        self._may_make(vmid, pool)
+        sent = {"cpu": kwargs.get("cpu"), "smbios1": kwargs.get("smbios_product"), "scsihw": kwargs.get("disk_bus") == "scsi0"}
+        fields = ["name", "memory", "cores", "sockets", "ostype", "serial0", "onboot", "boot", *nics]
+        self._may_set(vmid, fields + [key for key, value in sent.items() if value], pool=pool)
+        self._may_use(nics.values())
+        self._check(f"/storage/{kwargs.get('storage') or 'local-lvm'}", "Datastore.AllocateSpace")
+        for volume in filter(None, (kwargs.get("iso"), kwargs.get("import_from"))):
+            self._check(f"/storage/{volume.split(':')[0]}", "Datastore.AllocateSpace", "Datastore.Audit", any_of=True)
+        self._log("create_vm", vmid, name, pool=pool, **kwargs)
+        self.pools[pool].add(int(vmid))
+        self.vms[int(vmid)] = {"vmid": int(vmid), "name": name, "config": kwargs, "status": "stopped"}
         self.vms[int(vmid)].update(self._with_macs(vmid, nics))
         return "UPID:x"
 
-    def clone_vm(self, source_vmid, new_vmid, *, name, full=True):
-        self._log("clone_vm", source_vmid, new_vmid, name=name, full=full)
+    def clone_vm(self, source_vmid, new_vmid, *, name, pool, full=True):
         # PVE copies the template's NICs and always gives each one a new MAC.
         source = self.vms.get(int(source_vmid), {})
         nics = {}
@@ -163,22 +246,24 @@ class FakeProxmox:
             if found:
                 rest = value.split(",", 1)[1] if "," in value else ""
                 nics[key] = f"virtio={self.mac(new_vmid, found.group(1))}" + ("," + rest if rest else "")
-        self.vms[int(new_vmid)] = {
-            "vmid": int(new_vmid),
-            "name": name,
-            "template_of": int(source_vmid),
-            "status": "stopped",
-            **(nics or {"net0": "virtio=02:00:00:CC:00:00,bridge=vmbr0,tag=5"}),
-        }
+        nics = nics or {"net0": "virtio=02:00:00:CC:00:00,bridge=vmbr0,tag=5"}
+        self._check(f"/vms/{int(source_vmid)}", "VM.Clone")
+        self._may_make(new_vmid, pool)
+        self._may_use(nics.values())  # the copy keeps the template's bridges
+        self._check("/storage/local-lvm", "Datastore.AllocateSpace")  # where the template's disk is
+        self._log("clone_vm", source_vmid, new_vmid, name=name, pool=pool, full=full)
+        self.pools[pool].add(int(new_vmid))
+        self.vms[int(new_vmid)] = {"vmid": int(new_vmid), "name": name, "template_of": int(source_vmid), "status": "stopped", **nics}
         return "UPID:x"
 
     def delete_vm(self, vmid, *, purge=True):
-        from simrack.errors import BackendError
-
+        self._check(f"/vms/{int(vmid)}", "VM.Allocate")
         self._log("delete_vm", vmid, purge=purge)
         if self.vms.get(int(vmid), {}).get("status") == "running":
             raise BackendError(f"Proxmox API DELETE /qemu/{vmid} failed (500).", detail=f"VM {vmid} is running - destroy failed")
         self.vms.pop(int(vmid), None)
+        for members in self.pools.values():
+            members.discard(int(vmid))
         return "UPID:x"
 
     def wait_task(self, upid, *, timeout=600, poll=1.0):
@@ -186,6 +271,8 @@ class FakeProxmox:
 
     def set_vm_config(self, vmid, **fields):
         self._refuse_root_only("PUT", f"/qemu/{vmid}/config", fields)
+        self._may_set(vmid, fields)
+        self._may_use(value for key, value in fields.items() if re.fullmatch(r"net\d+", key))
         self._log("set_vm_config", vmid, **fields)
         vm = self.vms.setdefault(int(vmid), {"vmid": int(vmid), "name": f"vm{vmid}"})
         for key, value in self._with_macs(vmid, fields).items():
@@ -198,6 +285,7 @@ class FakeProxmox:
                 vm[key] = value
 
     def set_power(self, vmid, action, *, timeout=120):
+        self._check(f"/vms/{int(vmid)}", "VM.PowerMgmt")
         self._log("set_power", vmid, action, timeout=timeout)
         vm = self.vms.setdefault(int(vmid), {"vmid": int(vmid), "name": f"vm{vmid}"})
         if action == "reboot":
@@ -245,11 +333,13 @@ class FakeProxmox:
         self.networks.pop(name, None)
 
     def create_snapshot(self, vmid, name):
+        self._check(f"/vms/{int(vmid)}", "VM.Snapshot")
         self._log("create_snapshot", vmid, name)
         self.snapshots.setdefault(int(vmid), {})[name] = {"config": dict(self.vms.get(int(vmid), {}))}
         return "UPID:x"
 
     def rollback_snapshot(self, vmid, name):
+        self._check(f"/vms/{int(vmid)}", "VM.Snapshot", "VM.Snapshot.Rollback", any_of=True)
         self._log("rollback_snapshot", vmid, name)
         snapshot = self.snapshots.get(int(vmid), {}).get(name)
         if snapshot:
@@ -257,6 +347,7 @@ class FakeProxmox:
         return "UPID:x"
 
     def delete_snapshot(self, vmid, name):
+        self._check(f"/vms/{int(vmid)}", "VM.Snapshot")
         self.snapshots.get(int(vmid), {}).pop(name, None)
         return ""
 
@@ -277,7 +368,15 @@ class FakeMist:
         #: The token's role on ``org_id``, as GET /self reports it; None lists no privileges at all.
         self.role = role
         self.org_id = org_id
+        #: What GET /self lists instead, when a test needs more than one role on ``org_id``.
+        self.privileges: list | None = None
         self.self_reads = 0
+        #: What GET /orgs/{id} says holds ``org_id``: its MSP and the org groups it is in.
+        self.msp_id = "msp-example"
+        self.orggroup_ids = ["og-example"]
+        self.org_reads = 0
+        #: Mist refuses GET /orgs/{id} with this status, e.g. 403 for a token it hides the org from.
+        self.org_status: int | None = None
         self.site_records: dict[str, dict] = {}
         self.settings_by_site: dict[str, dict] = {}
         self.topologies: dict[str, list[dict]] = {}
@@ -315,12 +414,24 @@ class FakeMist:
     def whoami(self):
         self._read()
         self.self_reads += 1
+        if self.privileges is not None:
+            return {"email": "lab@example.com", "privileges": self.privileges}
         if self.role is None:
             return {"email": "lab@example.com", "privileges": []}
         return {
             "email": "lab@example.com",
             "privileges": [{"scope": "org", "org_id": self.org_id, "name": "Example Org", "role": self.role}],
         }
+
+    def org(self, org_id=None):
+        self._read()
+        self.org_reads += 1
+        status = self.org_status or (403 if org_id != self.org_id else None)
+        if status:
+            from simrack.errors import BackendError
+
+            raise BackendError(f"Mist API GET /orgs/{org_id} failed ({status}).", status=status)
+        return {"id": self.org_id, "name": "Example Org", "msp_id": self.msp_id, "orggroup_ids": list(self.orggroup_ids)}
 
     def sites(self, org_id=None):
         """Only the org the token has a role on answers."""
@@ -660,7 +771,7 @@ def lab_settings(tmpdir: str, *, profile: str = LAB_PROFILE, **overrides) -> Set
 
 
 def make_manager(tmpdir: str, *, proxmox=None, mist=None, **settings_kwargs) -> SandboxManager:
-    settings = lab_settings(tmpdir, pve_token="fake", mist_token="fake-token", **settings_kwargs)
+    settings = lab_settings(tmpdir, **{"pve_token": "fake", "mist_token": "fake-token", **settings_kwargs})
     return SandboxManager(
         settings,
         proxmox=proxmox or FakeProxmox(),
@@ -707,3 +818,59 @@ class TempDir:
 def read_state(manager: SandboxManager, name: str) -> dict:
     with open(os.path.join(manager.state_dir, "sandboxes", f"{name}.json"), encoding="utf-8") as handle:
         return json.load(handle)
+
+
+class RedirectingPair:
+    """Two loopback web servers. ``saved`` is the address a token was saved for;
+    it answers every request with a 302 to the other one, which answers ``body``.
+    ``carried`` notes, per server and per request, whether a token came along."""
+
+    def __init__(self, body: bytes = b"{}"):
+        self.body = body
+        self.carried: dict[str, list[bool]] = {"saved": [], "elsewhere": []}
+
+    def __enter__(self):
+        self._no_proxy = mock.patch.dict(os.environ, {"no_proxy": "*"})
+        self._no_proxy.start()
+        self._elsewhere = self._serve("elsewhere", self._answer)
+        self._saved = self._serve("saved", self._redirect)
+        self.saved = "http://127.0.0.1:%d" % self._saved.server_address[1]
+        return self
+
+    def __exit__(self, *exc):
+        for server in (self._saved, self._elsewhere):
+            server.shutdown()
+            server.server_close()
+        self._no_proxy.stop()
+        return False
+
+    def _serve(self, name: str, answer):
+        carried = self.carried[name]
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def handle_any(self):
+                carried.append("Authorization" in self.headers)
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                answer(self)
+
+            do_GET = do_POST = do_PUT = do_DELETE = handle_any
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def _redirect(self, handler):
+        handler.send_response(302)
+        handler.send_header("Location", "http://127.0.0.1:%d%s" % (self._elsewhere.server_address[1], handler.path))
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+
+    def _answer(self, handler):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(self.body)))
+        handler.end_headers()
+        handler.wfile.write(self.body)

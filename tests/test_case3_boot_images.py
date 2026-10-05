@@ -99,6 +99,13 @@ class TestBootImages(unittest.TestCase):
         # Every clone gets its own vmid, which is what the front end keys on.
         self.assertNotEqual(node.vmid, self.sandbox.node("sbx-acc-01").vmid)
 
+    def test_every_guest_is_made_in_the_simrack_pool(self):
+        """The token may change only what is in its pool: a guest left outside could never be torn down."""
+        self.manager.provision_node(self.sandbox, "sbx-clone-01", template_vmid=320)
+        self.manager.provision_node(self.sandbox, "sbx-img-01", image="local:import/vJunos-switch-26.2R1.7.qcow2")
+        self.assertEqual(self.px.called("clone_vm")[-1][2].get("pool"), "simrack")
+        self.assertEqual(self.px.called("create_vm")[-1][2].get("pool"), "simrack")
+
     def test_a_node_with_neither_template_nor_image_is_refused(self):
         with self.assertRaises(LabError) as caught:
             self.manager.provision_node(self.sandbox, "sbx-nothing-01")

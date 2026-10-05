@@ -42,12 +42,17 @@ def main(argv: list[str] | None = None) -> int:
         default=15.0,
         help="seconds between looks at SimRack, to tell the assistant when the tools on offer change (default 15)",
     )
+    mcp.add_argument(
+        "--read-only",
+        action="store_true",
+        help="offer the assistant looks only and refuse every change, whatever SimRack itself allows",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "mcp":
         from .mcp import main as serve_mcp
 
-        return serve_mcp(args.url, wait=args.wait, poll=args.poll)
+        return serve_mcp(args.url, wait=args.wait, poll=args.poll, read_only=args.read_only)
     settings = Settings.load()
     for problem in settings.problems:
         print(f"simrack: {problem['error']}\n{problem['detail']}", file=sys.stderr)

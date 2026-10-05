@@ -52,8 +52,15 @@ def build_router(manager: SandboxManager) -> Router:
     router = Router()
 
     router.add("GET", "/api/state", lambda **_: manager.state())
+    router.add("GET", "/api/access", lambda **_: {"products": manager.access.products()})
+
+    def pause(body, **_):
+        if not isinstance(body.get("paused"), bool):
+            raise LabError('Send {"paused": true} or {"paused": false}.', detail="Nothing changed.")
+        return manager.set_paused(body["paused"])
+
     # Not queued behind a running change: a pause stops that change at its next step.
-    router.add("POST", "/api/pause", lambda body, **_: manager.set_paused(body.get("paused") is True), locked=False)
+    router.add("POST", "/api/pause", pause, locked=False)
     router.add("GET", "/api/recipes", lambda **_: {"recipes": manager.state()["recipes"]})
 
     setup = SetupPage(manager)
@@ -138,7 +145,13 @@ def build_router(manager: SandboxManager) -> Router:
     router.add("POST", "/api/sandboxes/{name}/revert", lambda name, body, **_: manager.revert(manager.get(name), body.get("label", "")))
     router.add("POST", "/api/sandboxes/{name}/mist/site", lambda name, **_: manager.mist_create_site(manager.get(name)))
     router.add("POST", "/api/sandboxes/{name}/mist/fabric", lambda name, **_: manager.mist_build_fabric(manager.get(name)))
-    router.add("POST", "/api/sandboxes/{name}/fabric/check", lambda name, **_: manager.fabric_check(manager.get(name)))
+
+    def fabric_check(name, body, **_):
+        if "repair" in body and not isinstance(body["repair"], bool):
+            raise LabError('Send {"repair": true} or {"repair": false}, or leave it out.', detail="Nothing was checked.")
+        return manager.fabric_check(manager.get(name), repair=body.get("repair"))
+
+    router.add("POST", "/api/sandboxes/{name}/fabric/check", fabric_check)
     router.add("POST", "/api/sandboxes/{name}/mist/snapshot", lambda name, body, **_: manager.mist_snapshot(manager.get(name), body.get("label", "manual")))
     router.add("POST", "/api/sandboxes/{name}/mist/revert", lambda name, body, **_: manager.mist_revert(manager.get(name), body.get("label", "")))
     router.add("GET", "/api/sandboxes/{name}/mist/health", lambda name, **_: manager.mist_health(manager.get(name)))

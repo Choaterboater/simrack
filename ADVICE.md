@@ -234,13 +234,13 @@ border router means the border path is broken, not Mist.
   Proxmox has right, it says so; that mapping is the first thing to check.
 - The front end has no authentication of its own beyond a bearer token. It binds
   127.0.0.1 by default; use an SSH tunnel, not a public bind.
-- The setup page's Proxmox token is a `simrack@pve` token with one role, but
-  the role is granted on all of `/vms`, so Proxmox would let it change live
-  guests too: SimRack's guardrails, not Proxmox, keep it off them. A resource
-  pool for the sandbox range would let Proxmox enforce that. The one role also
-  grants `Datastore.AllocateSpace` on `local`, where `Datastore.Audit` is all
-  SimRack needs. The service itself runs as root: it makes bridges with
-  `ip link` and opens the serial console.
+- The setup page's Proxmox token may change only guests in the Proxmox resource
+  pool `simrack`, where SimRack makes every guest, so Proxmox itself refuses it
+  a live guest. It may still put a sandbox NIC on any bridge in the local
+  network zone, since sandbox bridges are named only when a sandbox is built:
+  SimRack's guardrails, not Proxmox, keep sandbox NICs off live bridges. The
+  service itself runs as root: it makes bridges with `ip link` and opens the
+  serial console.
 
 ## 7. Host gotchas
 

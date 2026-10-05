@@ -23,13 +23,14 @@ Work only on sandboxes; what the setup page protects is someone's live lab.
 
 ```json
 {"mcpServers": {"simrack": {"command": "ssh",
-  "args": ["-T", "-o", "BatchMode=yes", "<ssh host>", "cd /opt/simrack && exec python3 -m simrack mcp"]}}}
+  "args": ["-T", "-o", "BatchMode=yes", "<ssh host>",
+    "cd /opt/simrack && set -a && { [ ! -f simrack.env ] || . ./simrack.env; } && exec python3 -m simrack mcp"]}}}
 ```
 
 ## Read first
 Done when you can state: setup saved or not, changes on or off and why, free RAM, and each sandbox with its nodes.
 - `state`: `profile.loaded`, `writes_enabled` and `read_only_reason`, `paused`, `mist.writes_enabled`, `assistants.risky`, `host.free_ram_mb`, `production`, `sandboxes`.
-- `get_sandbox`, `mist_health`, `list_recipes`, `list_shapes`.
+- `get_sandbox`, `mist_health`, `list_recipes`, `list_shapes`, `check_cabling`.
 - Without MCP: `curl -s http://127.0.0.1:8787/api/state`, on the host or through the tunnel.
 - On the host: `pvesh get /nodes` (the exact node name), `qm list`, `ip link show <bridge>` (MTU).
 
@@ -37,14 +38,14 @@ Done when you can state: setup saved or not, changes on or off and why, free RAM
 MCP: Casper's change box asks; don't ask again in chat. Else ask the user first; show the exact call.
 Casper also asks before a shell command reaches a new host.
 Writes start off in Casper; the user turns them on with `/mcp writes simrack`.
-1. A missing or refused change says why: paused, a token that may not write, no Mist token, risky tools not ticked. Only the user turns it on, on the setup page or the pause button.
+1. A missing or refused change says why: paused, a token that may not write, no Mist token, risky tools not ticked, or the server started with `--read-only`. Only the user turns it on: on the setup page, the pause button, or `~/.casper/mcp.json` for `--read-only`.
 2. Save first, in both places, with one label:
    WRITE: `save_point` and `mist_save_point`.
 3. Make one change, then look again. Stop at the first error and show it.
 4. "Still running" with a job number: call `job_result` with it. Never send the change again.
 
 - WRITE: `build_sandbox` (a recipe, plus `template_vmid` or `image`) or `build_from_shape` builds a sandbox; `with_mist_site` adds its Mist site.
-- WRITE: `power_node`, `add_cable`, `move_cable`, `remove_cable`. `check_cabling` also re-plugs wrong ends while changes are on.
+- WRITE: `power_node`, `add_cable`, `move_cable`, `remove_cable`, `fix_cabling` (puts back what `check_cabling` found drifted).
 - WRITE: `mist_create_site`, `mist_build_fabric` (saves a Mist point first), `adopt_switch` (through the serial console).
 - WRITE: once the setup page ticks Assistants: `tear_down` (`keep_mist` keeps the site), `delete_node`, `revert_mist`, `revert_guests`, `console_command`. Casper counts the first three and `remove_cable` as deletes: off until `/mcp allow simrack`.
 - WRITE: `SIMRACK_HOST=<ssh host> ./deploy/deploy.sh` copies the checkout to `/opt/simrack`, runs the tests there and restarts the service.

@@ -20,7 +20,7 @@ from simrack.config import Settings
 from simrack.errors import BackendError, GuardrailViolation
 from simrack.mist import MistClient
 from simrack.proxmox import ProxmoxClient
-from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
+from tests.fakes import FakeMist, FakeProxmox, RedirectingPair, TempDir, make_manager
 
 
 class Reply:
@@ -57,13 +57,25 @@ class TestProxmoxClientWire(unittest.TestCase):
         client = ProxmoxClient(Settings(pve_token="t"))
         sent = wire(
             client,
-            lambda c: c.create_vm(321, "sbx-acc-01", memory_mb=5120, cores=4, import_from="local:import/vj.qcow2", smbios_product="VM-VEX", cpu="host"),
+            lambda c: c.create_vm(321, "sbx-acc-01", pool="simrack", memory_mb=5120, cores=4, import_from="local:import/vj.qcow2", smbios_product="VM-VEX", cpu="host"),
         )
         form = sent[0]["form"]
         for root_only in ("args", "hookscript"):
             self.assertNotIn(root_only, form, "only root@pam may set it, so the API token would be refused")
         self.assertEqual(form["cpu"], ["host"])
         self.assertRegex(form["smbios1"][0], r"^base64=1,product=Vk0tVkVY,uuid=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+    def test_a_guest_is_made_inside_the_simrack_pool(self):
+        """The token may change only what is in its pool, so the clone or create must name it."""
+        client = ProxmoxClient(Settings(pve_token="t"))
+        sent = wire(
+            client,
+            lambda c: (
+                c.clone_vm(320, 321, name="sbx-acc-01", pool="simrack"),
+                c.create_vm(322, "sbx-img-01", pool="simrack", memory_mb=2048, cores=4, iso="local:iso/a.iso", disk_bus="scsi0"),
+            ),
+        )
+        self.assertEqual([request["form"].get("pool") for request in sent], [["simrack"], ["simrack"]])
 
     def test_images_still_list_the_isos_on_a_proxmox_without_the_import_content_type(self):
         """Proxmox before 8.2 has no import content type, and refuses to be asked for it."""
@@ -125,6 +137,21 @@ class TestCertificates(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=refused), self.assertRaises(BackendError) as caught:
             MistClient(Settings(mist_token="t")).sites("org-1")
         self.assertIn("update-ca-certificates", caught.exception.detail)
+
+
+class TestTokensStayAtTheirAddress(unittest.TestCase):
+    """A token goes only to the address it was saved for. When that address
+    answers with a redirect, the request that follows it goes without the token."""
+
+    def test_the_proxmox_token_does_not_follow_a_redirect(self):
+        with RedirectingPair(b'{"data": {}}') as pair:
+            ProxmoxClient(Settings(pve_token="t", pve_api_base=pair.saved + "/api2/json")).vm_status(100)
+        self.assertEqual(pair.carried, {"saved": [True], "elsewhere": [False]})
+
+    def test_the_mist_token_does_not_follow_a_redirect(self):
+        with RedirectingPair(b"[]") as pair:
+            MistClient(Settings(mist_token="t", mist_api_base=pair.saved + "/api/v1")).sites("org-1")
+        self.assertEqual(pair.carried, {"saved": [True], "elsewhere": [False]})
 
 
 class TestTokenSafeBuild(unittest.TestCase):

@@ -10,22 +10,24 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import stat
+import subprocess
+import sys
 import textwrap
 import threading
 import unittest
 import urllib.error
 import urllib.request
 
-from simrack.access import required_privileges
+from simrack.access import VM_PRIVILEGES, required_privileges, token_commands
 from simrack.api import serve
 from simrack.config import Settings
+from simrack.errors import BackendError
 from simrack.models import Link, Node, Recipe, Sandbox
 from simrack.proxmox import ProxmoxClient
 from simrack.service import SandboxManager
 from simrack.setup_page import MIST_API
-from tests.fakes import FakeMist, FakeProxmox, TempDir, make_manager
+from tests.fakes import BUILT_IN_ROLES, PVE_TEMPLATE_USER, FakeMist, FakeProxmox, TempDir, lab_settings, make_manager
 from tests.test_case19_real_gear import wire
 from tests.test_case20_token_decides import shipped
 
@@ -381,22 +383,104 @@ class TestTheSetupPage(unittest.TestCase):
         self.assertEqual(status, 200, reply)
         self.assertEqual(reply["partly_protected"], [])
 
-    def test_it_shows_how_to_make_a_proxmox_token_that_may_do_just_what_simrack_checks(self):
+    def run_as_root(self, lines: list[str], guests: list[dict]) -> tuple[list[tuple[str, list[str]]], str]:
+        """Paste the commands into a root shell on a stand-in host, whose pveum and
+        pvesh note each call and answer as Proxmox would. Returns the calls and
+        what the commands printed."""
+        with TempDir() as folder:
+            log, listed = os.path.join(folder, "calls"), os.path.join(folder, "guests.json")
+            with open(listed, "w", encoding="utf-8") as handle:
+                json.dump(guests, handle)
+            stand_in = textwrap.dedent(f"""\
+                #!{sys.executable}
+                import json, os, sys
+                program, args = os.path.basename(sys.argv[0]), sys.argv[1:]
+                with open({log!r}, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps([program, args]) + "\\n")
+                if program == "pvesh" and args[:1] == ["get"] and args[1].endswith("/qemu"):
+                    print(open({listed!r}, encoding="utf-8").read())
+                if program == "pveum" and args[:3] == ["user", "token", "add"]:
+                    print(json.dumps({{"full-tokenid": args[3] + "!" + args[4], "value": "made-on-the-host"}}))
+                """)
+            for program in ("pveum", "pvesh"):
+                with open(os.path.join(folder, program), "w", encoding="utf-8") as handle:
+                    handle.write(stand_in)
+                os.chmod(os.path.join(folder, program), 0o755)
+            os.symlink(sys.executable, os.path.join(folder, "python3"))
+            ran = subprocess.run(
+                ["bash", "-c", "set -eu -o pipefail\n" + "\n".join(lines)],
+                env={**os.environ, "PATH": folder + os.pathsep + os.environ["PATH"]},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            with open(log, encoding="utf-8") as handle:
+                return [tuple(json.loads(line)) for line in handle], ran.stdout
+
+    def granted(self, calls) -> tuple[dict[str, frozenset], set[str]]:
+        """What simrack@pve holds after the calls, by ACL path, and the pools they made."""
+        roles, acl, pools = dict(BUILT_IN_ROLES), {}, set()
+        for program, args in calls:
+            if program == "pveum" and args[:2] == ["role", "add"]:
+                roles[args[2]] = frozenset(args[args.index("--privs") + 1].split())
+            elif program == "pveum" and args[:2] == ["pool", "add"]:
+                pools.add(args[2])
+            elif program == "pveum" and args[:2] == ["acl", "modify"]:
+                self.assertEqual(args[3:6], ["--users", "simrack@pve", "--roles"], args)
+                self.assertIn(args[6], roles, "a role Proxmox has, or one the commands made first")
+                acl[args[2]] = acl.get(args[2], frozenset()) | roles[args[6]]
+        return acl, pools
+
+    def test_it_shows_how_to_make_a_proxmox_token_that_may_change_only_simracks_pool(self):
         self.call("POST", "/api/setup", {"profile": {**SAVED, "management": {**SAVED["management"], "vlan": 10}}})
+        lines = self.call("GET", "/api/setup")[1]["proxmox_token_commands"]
+        live = {"vmid": 200, "name": "core-1", "status": "running"}
+        template = {"vmid": 310, "name": "vjunos-switch", "template": 1}
 
-        commands = [shlex.split(line.split("|")[0]) for line in self.call("GET", "/api/setup")[1]["proxmox_token_commands"]]
+        calls, printed = self.run_as_root(lines, [live, template])
 
-        role = next(c for c in commands if c[:4] == ["pveum", "role", "add", "SimRack"])
-        privileges = set(role[role.index("--privs") + 1].split())
-        acls = [c[3] for c in commands if c[:3] == ["pveum", "acl", "modify"] and c[4:] == ["--users", "simrack@pve", "--roles", "SimRack"]]
+        acl, pools = self.granted(calls)
         for path, needed in required_privileges(self.manager.settings).items():
             with self.subTest(path):
-                self.assertTrue(any(path == acl or path.startswith(acl + "/") for acl in acls), f"no grant covers {path}")
-                self.assertLessEqual(set(needed), privileges)
-        self.assertNotIn("/", acls, "never the whole host")
-        self.assertIn(["pveum", "user", "add", "simrack@pve"], commands)
-        token = next(c for c in commands if c[:4] == ["pveum", "user", "token", "add"])
-        self.assertEqual(token[4:8], ["simrack@pve", "simrack", "--privsep", "0"], "the token has the user's grants")
+                above = [grant for grant in acl if path == grant or path.startswith(grant + "/")]
+                self.assertTrue(above, f"no grant covers {path}")
+                self.assertLessEqual(set(needed), acl[max(above, key=len)], "the deepest grant is the one Proxmox uses")
+        changes = set(VM_PRIVILEGES) - {"VM.Audit"}
+        self.assertEqual([path for path, held in acl.items() if held & changes], ["/pool/simrack"], "it changes only its own guests")
+        self.assertEqual(pools, {"simrack"})
+        self.assertIn(("pvesh", ["get", "/nodes/pve-lab/qemu", "--output-format", "json"]), calls)
+        self.assertEqual({path: held for path, held in acl.items() if path.startswith("/vms/")}, {"/vms/310": PVE_TEMPLATE_USER})
+        self.assertNotIn("/", acl, "never the whole host")
+        self.assertIn(("pveum", ["user", "add", "simrack@pve"]), calls)
+        token = next(args for _, args in calls if args[:3] == ["user", "token", "add"])
+        self.assertEqual(token[3:7], ["simrack@pve", "simrack", "--privsep", "0"], "the token has the user's grants")
+        self.assertEqual(printed, "simrack@pve!simrack=made-on-the-host\n", "what to paste into the page")
+
+    def test_the_token_it_shows_builds_from_a_template_and_may_only_look_at_a_live_guest(self):
+        with TempDir() as tmp:
+            proxmox = FakeProxmox(templates=[320], privileges={})
+            proxmox.vms[200] = {"vmid": 200, "name": "core-1", "status": "running"}
+            calls, _ = self.run_as_root(token_commands(lab_settings(tmp)), list(proxmox.vms.values()))
+            proxmox.privileges, made = self.granted(calls)
+            proxmox.pools = {pool: set() for pool in made}
+            manager = make_manager(tmp, proxmox=proxmox)
+
+            state = manager.state()
+            self.assertTrue(state["writes_enabled"], state["read_only_reason"])
+            sandbox = manager.create_sandbox("pool-only", "single-switch", template_vmid=320)
+            guest = sandbox.nodes[0].vmid
+            self.assertEqual(proxmox.pools["simrack"], {guest})
+            self.assertEqual(proxmox.vms[guest]["status"], "running")
+            manager.snapshot(sandbox, "clean")
+            manager.revert(sandbox, "clean")
+            self.assertTrue(manager.teardown(sandbox)["complete"])
+            self.assertNotIn(guest, proxmox.vms)
+
+            with self.assertRaises(BackendError) as refused:
+                proxmox.set_power(200, "stop")
+            self.assertIn("/vms/200", refused.exception.detail)
+            self.assertEqual(proxmox.vms[200]["status"], "running")
 
     def test_a_profile_broken_by_an_upgrade_still_opens_the_page_and_changes_nothing(self):
         retired = textwrap.dedent(PROFILE).replace('node = "pve-lab"', 'node = "pve-lab"\nhookscript = "local:snippets/simrack-sbx.sh"')

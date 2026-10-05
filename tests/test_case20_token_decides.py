@@ -17,13 +17,23 @@ import urllib.parse
 import urllib.request
 from unittest import mock
 
+from simrack.access import VM_PRIVILEGES
 from simrack.api import serve
 from simrack.config import Settings
 from simrack.errors import GuardrailViolation
 from simrack.mist import MistClient
 from simrack.proxmox import ProxmoxClient
 from simrack.service import SandboxManager
-from tests.fakes import PVE_ADMINISTRATOR, PVE_AUDITOR, FakeMist, FakeProxmox, TempDir, lab_settings
+from tests.fakes import (
+    PVE_ADMINISTRATOR,
+    PVE_AUDITOR,
+    PVE_DATASTORE_USER,
+    PVE_SDN_USER,
+    FakeMist,
+    FakeProxmox,
+    TempDir,
+    lab_settings,
+)
 from tests.test_case19_real_gear import wire
 
 
@@ -73,13 +83,42 @@ class TestTheTokenDecides(unittest.TestCase):
         state = manager.state()
         self.assertFalse(state["writes_enabled"])
         reason = state["read_only_reason"]
-        for lacking in ("VM.Allocate", "VM.Clone", "VM.Config.Network", "Datastore.AllocateSpace", "SDN.Use"):
+        for lacking in ("VM.Allocate", "VM.Snapshot", "VM.Config.Network", "Datastore.AllocateSpace", "SDN.Use"):
             self.assertIn(lacking, reason)
         for held in ("VM.Audit", "Sys.Audit", "Datastore.Audit"):
             self.assertNotIn(held, reason)
         with self.assertRaises(GuardrailViolation):
             manager.create_sandbox("look-only", "single-switch", template_vmid=320)
         self.assertEqual(proxmox.calls, [])
+
+    def test_change_rights_count_only_on_simracks_pool(self):
+        """Granted on /vms, SimRack's role reaches every live guest too."""
+        role = frozenset(VM_PRIVILEGES)
+        rest = {"/nodes": PVE_AUDITOR, "/storage/local": PVE_AUDITOR, "/storage/local-lvm": PVE_DATASTORE_USER, "/sdn/zones/localnetwork": PVE_SDN_USER}
+
+        on_every_guest = self.manager(proxmox=FakeProxmox(templates=[320], privileges={"/vms": role, **rest})).state()
+        self.assertFalse(on_every_guest["writes_enabled"])
+        self.assertIn("on /pool/simrack", on_every_guest["read_only_reason"])
+
+        in_the_pool = FakeProxmox(templates=[320], privileges={"/pool/simrack": role, "/vms": PVE_AUDITOR, **rest})
+        self.assertTrue(self.manager(proxmox=in_the_pool).state()["writes_enabled"])
+
+    def test_a_token_that_may_clone_no_template_may_still_change_the_lab(self):
+        """Which templates it may clone is asked when a build names one."""
+        proxmox = FakeProxmox(templates=[320], privileges=PVE_ADMINISTRATOR - {"VM.Clone"})
+        self.assertTrue(self.manager(proxmox=proxmox).state()["writes_enabled"])
+
+    def test_a_template_the_token_may_not_clone_is_refused_with_the_command_that_allows_it(self):
+        proxmox = FakeProxmox(templates=[320], privileges=PVE_ADMINISTRATOR - {"VM.Clone"})
+        manager = self.manager(proxmox=proxmox)
+
+        with self.assertRaises(GuardrailViolation) as refused:
+            manager.create_sandbox("no-clone", "single-switch", template_vmid=320)
+
+        self.assertIn("may not clone template 320", refused.exception.message)
+        self.assertIn("pveum acl modify /vms/320 --users simrack@pve --roles PVETemplateUser", refused.exception.detail)
+        self.assertEqual(proxmox.calls, [], "refused before anything is made, the park bridge too")
+        self.assertNotIn("no-clone", manager.sandboxes)
 
     def test_a_mist_token_that_may_only_look_turns_mist_changes_off_but_not_the_lab(self):
         mist = FakeMist(role="read")
@@ -100,6 +139,78 @@ class TestTheTokenDecides(unittest.TestCase):
                 state = self.manager(mist=mist).state()
                 self.assertFalse(state["mist"]["writes_enabled"])
                 self.assertIn("no role on this org", state["mist"]["read_only_reason"])
+
+    def test_a_write_role_on_the_orgs_msp_or_an_org_group_holding_it_turns_mist_changes_on(self):
+        """A user token can hold its role above the org: on the MSP, or on an org group the org is in."""
+        for n, privilege in enumerate((
+            {"scope": "msp", "msp_id": "msp-example", "name": "Example MSP", "role": "admin"},
+            {"scope": "orggroup", "msp_id": "msp-example", "orggroup_ids": ["og-example"], "name": "Lab orgs", "role": "write"},
+            {"scope": "orggroup", "msp_id": "msp-example", "orggroup_id": "og-example", "name": "Lab orgs", "role": "write"},
+        )):
+            with self.subTest(privilege=privilege):
+                mist = FakeMist()
+                mist.privileges = [privilege]
+                manager = self.manager(mist=mist)
+
+                self.assertTrue(manager.state()["mist"]["writes_enabled"])
+                manager.mist_create_site(manager.create_sandbox(f"above-org-{n}", "single-switch", template_vmid=320))
+                self.assertEqual([call[0] for call in mist.calls], ["create_site"])
+                self.assertEqual(mist.org_reads, 1, "asked once, then remembered with the rest")
+
+    def test_an_msp_or_org_group_role_that_does_not_hold_this_org_changes_nothing_here(self):
+        for case, privilege, status in (
+            ("another MSP", {"scope": "msp", "msp_id": "msp-other", "name": "Other MSP", "role": "admin"}, None),
+            ("another org group", {"scope": "orggroup", "orggroup_ids": ["og-other"], "name": "Other orgs", "role": "write"}, None),
+            ("an org Mist hides from the token", {"scope": "msp", "msp_id": "msp-other", "name": "Other MSP", "role": "admin"}, 403),
+        ):
+            with self.subTest(case):
+                mist = FakeMist()
+                mist.privileges, mist.org_status = [privilege], status
+                state = self.manager(mist=mist).state()
+                self.assertFalse(state["mist"]["writes_enabled"])
+                self.assertIn("no role on this org", state["mist"]["read_only_reason"])
+
+    def test_a_look_only_role_held_above_the_org_is_named_with_where_it_is_held(self):
+        mist = FakeMist()
+        mist.privileges = [
+            {"scope": "msp", "msp_id": "msp-example", "name": "Example MSP", "role": "read"},
+            {"scope": "orggroup", "orggroup_ids": ["og-example"], "name": "Lab orgs", "role": "helpdesk"},
+        ]
+        state = self.manager(mist=mist).state()
+
+        self.assertFalse(state["mist"]["writes_enabled"])
+        reason = state["mist"]["read_only_reason"]
+        self.assertIn("read through its MSP", reason)
+        self.assertIn("helpdesk through an org group", reason)
+
+    def test_when_mist_cannot_say_what_holds_the_org_mist_changes_stay_off(self):
+        mist = FakeMist()
+        mist.privileges, mist.org_status = [{"scope": "msp", "msp_id": "msp-example", "name": "Example MSP", "role": "admin"}], 503
+        state = self.manager(mist=mist).state()
+
+        self.assertFalse(state["mist"]["writes_enabled"])
+        self.assertIn("cannot tell what the Mist token may do", state["mist"]["read_only_reason"])
+
+    def test_mist_is_asked_about_the_org_only_when_a_role_above_it_could_hold_it(self):
+        for role in ("write", "read", None):
+            with self.subTest(role=role):
+                mist = FakeMist(role=role)
+                self.manager(mist=mist).state()
+                self.assertEqual(mist.org_reads, 0)
+
+    def test_with_no_mist_org_set_mist_changes_stay_off_whatever_the_token_may_do(self):
+        mist = FakeMist(role="admin")
+        settings = lab_settings(self.tmp, pve_token="fake", mist_token="fake-token", org_id="")
+        manager = SandboxManager(settings, proxmox=FakeProxmox(templates=[320]), mist=mist)
+
+        state = manager.state()
+        self.assertTrue(state["writes_enabled"], "the lab needs no Mist org")
+        self.assertFalse(state["mist"]["writes_enabled"])
+        self.assertIn("no Mist org is set", state["mist"]["read_only_reason"])
+        sandbox = manager.create_sandbox("no-org", "single-switch", template_vmid=320)
+        with self.assertRaises(GuardrailViolation):
+            manager.mist_create_site(sandbox)
+        self.assertEqual(mist.calls, [])
 
     def test_the_status_view_does_not_ask_proxmox_and_mist_again_on_every_poll(self):
         proxmox, mist = FakeProxmox(templates=[320]), FakeMist()
@@ -175,6 +286,15 @@ class TestOverHttp(unittest.TestCase):
         self.assertIn("paused", body["error"])
         self.assertEqual(self.post("/api/pause", {"paused": False}), (200, {"paused": False}))
 
+    def test_a_pause_needs_true_or_false_and_anything_else_changes_nothing(self):
+        self.post("/api/pause", {"paused": True})
+        for body in ({}, {"paused": "false"}, {"paused": 0}, {"paused": None}, {"pause": False}):
+            with self.subTest(body=body):
+                status, reply = self.post("/api/pause", body)
+                self.assertEqual(status, 400, reply)
+                self.assertIn('{"paused": false}', reply["error"])
+                self.assertIs(self.manager.access.paused(), True)
+
     def test_a_pause_gets_through_while_a_change_is_running(self):
         self.proxmox.let_go.clear()
         build = threading.Thread(
@@ -236,6 +356,14 @@ class TestAskingWhatATokenMayDo(unittest.TestCase):
 
         self.assertEqual([(s["method"], urllib.parse.urlparse(s["url"]).path) for s in sent], [("GET", "/api/v1/self")])
         self.assertEqual(me["privileges"][0]["role"], "write")
+
+    def test_mist_is_asked_which_msp_and_org_groups_hold_the_org(self):
+        body = json.dumps({"id": "org-1", "msp_id": "msp-1", "orggroup_ids": ["og-1"]}).encode()
+        org = {}
+        sent = wire(MistClient(Settings(mist_token="t", org_id="org-1")), lambda c: org.update(c.org()), body)
+
+        self.assertEqual([(s["method"], urllib.parse.urlparse(s["url"]).path) for s in sent], [("GET", "/api/v1/orgs/org-1")])
+        self.assertEqual((org["msp_id"], org["orggroup_ids"]), ("msp-1", ["og-1"]))
 
     def test_a_mist_client_with_no_write_gate_sends_no_change(self):
         client = MistClient(Settings(mist_token="t", org_id="org-1"))

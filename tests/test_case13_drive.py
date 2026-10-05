@@ -640,6 +640,37 @@ class TestFabricCheck(Built):
         self.assertFalse(result["summary"]["healthy"])
         self.assertEqual(self.px.calls, [])
 
+    def test_a_missing_park_bridge_it_may_not_make_says_why_in_words(self):
+        del self.px.networks[self.manager.settings.park_bridge]
+        with proxmox_may_only_look(self.manager):
+            _, message, detail = self.manager.access.lab_refusal()
+            result = self.manager.fabric_check(self.sandbox)
+        note = next(n for n in result["notes"] if n.startswith("The park bridge"))
+        self.assertIn(f"cannot start. {message} {detail} Check again", note)
+        self.assertNotIn("<class", note)
+        self.assertFalse(result["summary"]["healthy"])
+        self.assertEqual(self.px.calls, [])
+
+    def test_a_check_asked_only_to_look_fixes_nothing_even_when_it_may(self):
+        del self.px.networks["sbx323_325_20"]
+        del self.px.networks[self.manager.settings.park_bridge]
+        result = self.manager.fabric_check(self.sandbox, repair=False)
+        self.assertIs(result["repair"], False)
+        self.assertEqual(self.cable(result, "sbx323_325_20")["proxmox"], "broken")
+        note = next(n for n in result["notes"] if n.startswith("The park bridge"))
+        self.assertTrue(note.endswith("cannot start. Fixing the cabling makes it again."), note)
+        self.assertEqual(self.px.calls, [])
+
+    def test_a_fix_simrack_may_not_make_is_refused_and_nothing_is_checked(self):
+        del self.px.networks["sbx323_325_20"]
+        with proxmox_may_only_look(self.manager):
+            refused, message, _ = self.manager.access.lab_refusal()
+            with self.assertRaises(refused) as caught:
+                self.manager.fabric_check(self.sandbox, repair=True)
+        self.assertEqual(caught.exception.message, message)
+        self.assertIsNone(self.sandbox.fabric_check)
+        self.assertEqual(self.px.calls, [])
+
     def test_stray_ports_are_parked_and_fxp0_is_left_alone(self):
         core = self.vmid("sbx-core-01")
         self.px.vms[core]["net6"] = f"virtio={self.px.mac(core, 6)},bridge=sbx999_998_00,firewall=0"
@@ -812,9 +843,12 @@ class TestDriveApi(Built):
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
 
-    def _post(self, path):
+    def _post(self, path, body=None):
         request = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}", data=b"{}", method="POST", headers={"Content-Type": "application/json"}
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(body or {}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as reply:
@@ -843,6 +877,29 @@ class TestDriveApi(Built):
             self.assertIs(body["repair"], False)
             status, body = self._post("/api/sandboxes/park-a/mist/fabric")
         self.assertEqual(status, 409, body)
+
+    def test_a_check_can_be_asked_to_only_look_or_to_fix(self):
+        del self.px.networks["sbx323_325_20"]
+        status, body = self._post("/api/sandboxes/park-a/fabric/check", {"repair": False})
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["repair"], body["summary"]["fixed"]), (False, 0))
+        self.assertEqual(self.px.calls, [])
+        with proxmox_may_only_look(self.manager):
+            status, body = self._post("/api/sandboxes/park-a/fabric/check", {"repair": True})
+        self.assertEqual(status, 409, body)
+        status, body = self._post("/api/sandboxes/park-a/fabric/check", {"repair": True})
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["repair"], body["summary"]["fixed"]), (True, 1))
+
+    def test_repair_must_be_true_or_false_and_anything_else_checks_nothing(self):
+        del self.px.networks["sbx323_325_20"]
+        for repair in ("false", 0, None):
+            with self.subTest(repair=repair):
+                status, body = self._post("/api/sandboxes/park-a/fabric/check", {"repair": repair})
+                self.assertEqual(status, 400, body)
+                self.assertIn('{"repair": false}', body["error"])
+        self.assertEqual(self.px.calls, [])
+        self.assertIsNone(read_state(self.manager, "park-a")["fabric_check"])
 
 
 if __name__ == "__main__":

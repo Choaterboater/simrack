@@ -68,7 +68,7 @@ class ProxmoxClient:
             else:
                 data = encoded.encode()
         request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("Authorization", f"PVEAPIToken={self.token}")
+        request.add_unredirected_header("Authorization", f"PVEAPIToken={self.token}")
         request.add_header("Accept", "application/json")
         try:
             with urllib.request.urlopen(request, timeout=60, context=self._ssl) as reply:
@@ -171,6 +171,7 @@ class ProxmoxClient:
         vmid: int,
         name: str,
         *,
+        pool: str,
         memory_mb: int,
         cores: int,
         storage: str = "local-lvm",
@@ -188,7 +189,8 @@ class ProxmoxClient:
         ``iso`` boots an installer from a blank disk.
 
         Only fields an API token may set are sent: PVE lets just root@pam set
-        ``args`` or ``hookscript``, so the SMBIOS product goes in ``smbios1``."""
+        ``args`` or ``hookscript``, so the SMBIOS product goes in ``smbios1``.
+        The guest is made in ``pool``, where SimRack's token may change it."""
         if disk_bus not in ("virtio0", "scsi0", "sata0"):
             raise BackendError(f"Unsupported disk bus {disk_bus!r}.")
         if import_from and iso:
@@ -196,6 +198,7 @@ class ProxmoxClient:
         params = {
             "vmid": vmid,
             "name": name,
+            "pool": pool,
             "memory": memory_mb,
             "cores": cores,
             "sockets": 1,
@@ -225,12 +228,13 @@ class ProxmoxClient:
         params.update(extra or {})
         return self._request("POST", f"/nodes/{self.node}/qemu", params) or ""
 
-    def clone_vm(self, source_vmid: int, new_vmid: int, *, name: str, full: bool = True) -> str:
+    def clone_vm(self, source_vmid: int, new_vmid: int, *, name: str, pool: str, full: bool = True) -> str:
+        """Clone into ``pool``, where SimRack's token may change the copy."""
         return (
             self._request(
                 "POST",
                 f"/nodes/{self.node}/qemu/{int(source_vmid)}/clone",
-                {"newid": int(new_vmid), "name": name, "full": 1 if full else 0},
+                {"newid": int(new_vmid), "name": name, "pool": pool, "full": 1 if full else 0},
             )
             or ""
         )

@@ -28,6 +28,9 @@ PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
 #: How long to wait for SimRack's state when deciding which tools to offer.
 STATE_TIMEOUT = 4.0
+#: The same, until SimRack has answered once and there is a state to fall back on. Its first answer can be
+#: slower: it asks Proxmox and Mist what its tokens may do when it has not asked lately.
+FIRST_STATE_TIMEOUT = 15.0
 #: How long a look may take before SimRack counts as not answering.
 LOOK_TIMEOUT = 60.0
 #: Building and tearing down wait on Proxmox and Mist, and can take many minutes.
@@ -43,6 +46,13 @@ RISKY_OFF = (
     "Ask the person running SimRack to allow it there, or to do this from SimRack's own page."
 )
 NO_MIST = "SimRack has no Mist token yet. Add one on SimRack's setup page."
+PINNED = (
+    "SimRack's MCP server was started with --read-only, so it makes no changes. "
+    "Ask the person running the assistant to start it without --read-only."
+)
+PINNED_NOTE = " This server was started with --read-only: it offers looks only, whatever state says."
+#: What access_check answers in, for Casper.
+ACCESS_CONTRACT = "casper/access-check v2"
 
 SANDBOX = {"type": "string", "description": "The sandbox's name, as list_sandboxes shows it."}
 NODE = {"type": "string", "description": "A switch in the sandbox, like sbx-acc-01."}
@@ -76,7 +86,7 @@ class Tool:
     path: str
     #: What SimRack must allow right now for the tool to be offered: see ``Server.gates``.
     gate: str = "look"
-    #: look changes nothing; change does; undo throws work away. check looks, and mends what drifted when it may.
+    #: look changes nothing; change does; undo throws work away.
     kind: str = "look"
     properties: dict = field(default_factory=dict)
     required: tuple = ()
@@ -84,12 +94,13 @@ class Tool:
     mist: bool = False
     #: The kind of change, for Casper's change box: config, disruptive or delete.
     change_kind: str = "config"
+    #: Sent with every call, over anything the assistant passed.
+    body: dict = field(default_factory=dict)
 
-    def listing(self, lab_writable: bool) -> dict:
-        kind = ("change" if lab_writable else "look") if self.kind == "check" else self.kind
-        annotations = {"title": self.title, "readOnlyHint": kind == "look", "openWorldHint": self.mist}
-        if kind != "look":
-            annotations["destructiveHint"] = kind == "undo"
+    def listing(self) -> dict:
+        annotations = {"title": self.title, "readOnlyHint": self.kind == "look", "openWorldHint": self.mist}
+        if self.kind != "look":
+            annotations["destructiveHint"] = self.kind == "undo"
         tool = {
             "name": self.name,
             "title": self.title,
@@ -97,9 +108,9 @@ class Tool:
             "inputSchema": {"type": "object", "properties": self.properties, "required": list(self.required), "additionalProperties": False},
             "annotations": annotations,
         }
-        if kind == "change":
+        if self.kind == "change":
             tool["_meta"] = {"casper/safety": "write"}
-        if kind != "look":
+        if self.kind != "look":
             tool.setdefault("_meta", {})["casper/change-kind"] = self.change_kind
         return tool
 
@@ -125,6 +136,14 @@ TOOLS = (
         "templates, images and sandboxes. Call this first.",
         "GET",
         "/api/state",
+    ),
+    Tool(
+        "access_check",
+        "Check access",
+        "Who SimRack's Proxmox and Mist tokens are and where each may change things, whatever SimRack allows right now. "
+        "Says unknown when SimRack cannot find out.",
+        "GET",
+        "/api/access",
     ),
     Tool("list_sandboxes", "List sandboxes", "The sandboxes, with their switches, cables and Mist sites.", "GET", "/api/sandboxes"),
     _sandbox_tool("get_sandbox", "Show a sandbox", "One sandbox in full: switches, cables, save points and notes.", "GET", ""),
@@ -153,10 +172,10 @@ TOOLS = (
         "check_cabling",
         "Check cabling",
         "Checks every cable in the sandbox against Proxmox, and against LLDP and Mist where they can be read. "
-        "While SimRack may change the lab, it also puts back what drifted.",
+        "Changes nothing: fix_cabling puts back what drifted.",
         "POST",
         "/fabric/check",
-        kind="check",
+        body={"repair": False},
     ),
     Tool(
         "build_sandbox",
@@ -243,6 +262,17 @@ TOOLS = (
         change_kind="delete",
         extra={"bridge": {"type": "string", "description": "The cable's bridge, from get_sandbox."}},
         required=("bridge",),
+    ),
+    _sandbox_tool(
+        "fix_cabling",
+        "Fix cabling",
+        "Checks the cabling as check_cabling does, then puts back what drifted: makes missing cable bridges again, "
+        "plugs ends back where they belong and parks stray ports. It never adds NICs.",
+        "POST",
+        "/fabric/check",
+        gate="lab",
+        kind="change",
+        body={"repair": True},
     ),
     _sandbox_tool(
         "save_point",
@@ -423,9 +453,11 @@ def _misfit(name: str, rule: dict, value) -> list[str]:
 
 
 class Server:
-    def __init__(self, url: str, *, token: str = "", out=None, wait: float = 50.0, poll: float = 15.0):
+    def __init__(self, url: str, *, token: str = "", out=None, wait: float = 50.0, poll: float = 15.0, read_only: bool = False):
         self.url = url.rstrip("/")
         self.token = token
+        #: Started with --read-only: looks only, whatever SimRack allows.
+        self.read_only = read_only
         self.out = out or sys.stdout
         self.out_lock = threading.Lock()
         # No proxies: the bearer token goes to SimRack and nowhere else.
@@ -487,7 +519,7 @@ class Server:
 
     def refresh(self) -> dict:
         try:
-            self.state = self.http("GET", "/api/state", timeout=STATE_TIMEOUT)
+            self.state = self.http("GET", "/api/state", timeout=STATE_TIMEOUT if self.state else FIRST_STATE_TIMEOUT)
         except (Refused, Unreachable):
             pass
         return self.state
@@ -510,7 +542,7 @@ class Server:
 
     def offered(self, state: dict) -> list:
         gates = self.gates(state)
-        return [tool.listing(gates["lab"]) for tool in TOOLS if gates[tool.gate]]
+        return [tool.listing() for tool in TOOLS if gates[tool.gate] and not (self.read_only and tool.kind != "look")]
 
     def listed(self, tools: list) -> None:
         """Note the tools the assistant was just given, and from then on watch for them going stale."""
@@ -533,6 +565,8 @@ class Server:
     def refusal(self, tool: Tool) -> str:
         """Why SimRack would not let an assistant use the tool now, judged on fresh state; empty when it would.
         SimRack's API refuses changes itself, but not the risky tools: only this check holds those back."""
+        if self.read_only and tool.kind != "look":
+            return PINNED
         if tool.gate == "look":
             return ""
         try:
@@ -602,23 +636,34 @@ class Server:
             return trouble(refusal)
         in_path = {field for _, field, _, _ in string.Formatter().parse(tool.path) if field}
         path = tool.path.format(**{field: urllib.parse.quote(str(arguments[field]), safe="") for field in in_path})
-        body = {field: value for field, value in arguments.items() if field not in in_path}
+        body = {**{field: value for field, value in arguments.items() if field not in in_path}, **tool.body}
         timeout = LOOK_TIMEOUT if tool.method == "GET" else CHANGE_TIMEOUT
         try:
             said = self.http(tool.method, path, body, timeout=timeout)
         except (Refused, Unreachable) as problem:
             return trouble(str(problem))
+        if tool.name == "access_check":
+            return self.gated(said)
         return {"content": [{"type": "text", "text": json.dumps(said, separators=(",", ":"))}]}
+
+    def gated(self, said: dict) -> dict:
+        """SimRack's answer in Casper's contract, with whether this server lets changes through."""
+        products = said.get("products") if isinstance(said, dict) else None
+        if not isinstance(products, list) or not all(isinstance(product, dict) for product in products):
+            return trouble("SimRack's access answer is not one Casper can read. Update SimRack.")
+        gate = {"flag": "--read-only", "state": "off" if self.read_only else "on"}
+        answer = {"contract": ACCESS_CONTRACT, "products": [{**product, "server_gate": gate} for product in products]}
+        return {"content": [{"type": "text", "text": json.dumps(answer, separators=(",", ":"))}]}
 
     def http(self, method: str, path: str, body: dict | None = None, *, timeout: float) -> dict:
         headers = {"Accept": "application/json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
         data = None
         if method == "POST":
             data = json.dumps(body or {}).encode()
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
+        if self.token:
+            request.add_unredirected_header("Authorization", f"Bearer {self.token}")
         try:
             with self.opener.open(request, timeout=timeout) as reply:
                 return json.loads(reply.read() or b"{}")
@@ -640,7 +685,7 @@ class Server:
             "protocolVersion": asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
             "capabilities": {"tools": {"listChanged": True}},
             "serverInfo": {"name": "simrack", "version": __version__},
-            "instructions": INSTRUCTIONS,
+            "instructions": INSTRUCTIONS + (PINNED_NOTE if self.read_only else ""),
         }
 
     def reply(self, ident, result: dict) -> None:
@@ -656,7 +701,7 @@ class Server:
             self.out.flush()
 
 
-def main(url: str, *, wait: float = 50.0, poll: float = 15.0) -> int:
-    server = Server(url, token=os.environ.get("SIMRACK_TOKEN", ""), wait=wait, poll=poll)
+def main(url: str, *, wait: float = 50.0, poll: float = 15.0, read_only: bool = False) -> int:
+    server = Server(url, token=os.environ.get("SIMRACK_TOKEN", ""), wait=wait, poll=poll, read_only=read_only)
     server.run(iter(sys.stdin.buffer.readline, b""))
     return 0

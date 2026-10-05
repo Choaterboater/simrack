@@ -15,7 +15,7 @@ import re
 import tomllib
 import urllib.parse
 
-from .access import token_commands
+from .access import PROXMOX_TOKEN, token_commands
 from .config import PROFILE_FILE, TOKENS_FILE, Settings
 from .errors import GuardrailViolation, LabError, NotFound
 from .profile import ProfileError, dump_profile, profile_values, without_retired
@@ -23,9 +23,6 @@ from .service import PORT_KINDS
 
 FIX_ON_THE_PAGE = "Fix it on the setup page and save again. Nothing was saved."
 FIX_THE_FILE = "Fix the file and import it again. Nothing was saved."
-
-#: user@realm!name=secret, as Proxmox prints a token's ID and secret.
-PROXMOX_TOKEN = re.compile(r"[^\s=:/]+@[A-Za-z][\w.-]*![A-Za-z][\w.-]*=\S+")
 
 #: A Mist cloud's API, as Juniper lists them: api.mist.com, api.eu.mist.com, api.gc1.mist.com and so on.
 MIST_API = re.compile(r"https://api(\.[a-z0-9-]+)?\.mist\.com/api/v1/?")

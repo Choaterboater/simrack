@@ -76,11 +76,11 @@ is saved, and the page names what SimRack now leaves alone, even at teardown.
 | Table | Keys | Meaning |
 |---|---|---|
 | `[proxmox]` | `node` (required) | The node name, spelled exactly as Proxmox spells it: the API is case sensitive. |
-| `[mist]` | `org_id` | Your org. Its cloud is picked beside the Mist token. |
+| `[mist]` | `org_id` | Your org: Mist changes stay off until it is set. Its cloud is picked beside the Mist token. |
 | `[management]` | `bridge`, `cidr`, `pool` (required), `vlan` | Where fxp0 goes. Leave `vlan` out when the management network is untagged. The pool must sit inside `cidr`. |
 | `[protected]` | `vmids`, `lxc`, `bridges`, `mist_sites`, `subnets` | Everything live. SimRack refuses any action that would touch these. |
 | `[sandbox]` | `vmids`, `lxc`, `bridge_prefix`, `park_bridge` | Optional. The defaults are 320-399, 350-399, `sbx` and `sbxpark`. The optional hookscript matches `sbx*`, so change it too if you change the prefix. |
-| `[assistants]` | `risky` | Optional, off by default. Lets an assistant tear down sandboxes, revert, delete switches and type at a switch's console through the [MCP](#mcp) server. |
+| `[assistants]` | `risky` | Optional, off by default. Lets an assistant tear down sandboxes, revert, delete switches and type at a switch's console through the [MCP](#mcp) server. It only hides those tools; it does not lock the API. |
 
 A mistake in the profile (an unknown key, a wrong type, a pool outside its
 subnet) leaves the whole file out, so SimRack changes nothing, and the setup
@@ -95,18 +95,27 @@ The setup page's **Connect** part keeps the tokens in `state/tokens.json`
 the token pasted again, and a saved token is never shown or sent anywhere else.
 
 - **Proxmox.** The page shows `pveum` commands to run as root on the host. They
-  make a `simrack@pve` token with one role that holds just the privileges
-  SimRack checks: the VM privileges on `/vms`, `Sys.Audit` on the node, the two
-  storages, and `SDN.Use` on the local network zone. A root token works too,
-  but it may change anything on the host. The address defaults to the host
-  itself, `https://127.0.0.1:8006/api2/json`; change it only when SimRack runs
-  somewhere else.
+  make the Proxmox resource pool `simrack` and a `simrack@pve` token. SimRack's
+  own role, just the VM privileges it checks, is granted only on that pool, and
+  SimRack makes every guest in it, so Proxmox itself keeps the token off live
+  guests. Everywhere else the token gets Proxmox's smallest built-in role:
+  `PVEAuditor` to look at every guest, the node and `local`;
+  `PVEDatastoreUser` on `local-lvm`; `PVESDNUser` on the local network zone,
+  since sandbox bridges are named only when a sandbox is built. Each template
+  on the node gets `PVETemplateUser`, which lets it be cloned. A build from a
+  template made later is refused, naming the one command that grants it. A
+  root token works too, but it may change anything on the host. The address
+  defaults to the host itself, `https://127.0.0.1:8006/api2/json`; change it
+  only when SimRack runs somewhere else.
 - **Mist** (optional). Pick the cloud and paste an org API token. Super User or
-  Network Admin lets SimRack build Mist sites; Observer only looks.
+  Network Admin lets SimRack build Mist sites; Observer only looks. A user
+  token's role counts when it is held on the org, its MSP or an org group the
+  org is in.
 
 SimRack asks each token what it may do (Proxmox `GET /access/permissions`, Mist
-`GET /self`, for the profile's org) and offers only those changes. It keeps the
-answers for 30 seconds.
+`GET /self`, for the profile's org, plus `GET /orgs/{id}` when a role sits on an
+MSP or org group) and offers only those changes. It keeps the answers for 30
+seconds.
 
 ## The safety model
 
@@ -176,10 +185,13 @@ the tests prove it:
   address is the host itself (loopback, where its self-signed certificate never
   leaves the machine). Where the network inspects TLS, Mist calls fail until
   the inspecting CA is in the host's trust store
+- a token goes only to the address it was saved for: a request redirected
+  anywhere else (the MCP server's to SimRack too) goes without it
 - it changes nothing unless a profile is saved, it is not paused, and the
   token may make that change: the Proxmox token for the lab, a Mist token with
-  Super User or Network Admin on the profile's org for Mist. No setting or
-  environment variable overrides that
+  Super User or Network Admin on the profile's org, its MSP or an org group it
+  is in for Mist (no org, no Mist changes). No setting or environment variable
+  overrides that
 - tokens go only to the address saved beside them, over HTTPS, and a Mist
   token only to a Mist cloud
 - shapes are local files in `state/shapes/`. Importing and deleting them works
@@ -254,16 +266,16 @@ python3 -m unittest discover -s tests -t . -v
 | `test_case10_ui_files.py` | the page's files are served as files, without the token, and nothing else on disk is |
 | `test_case11_memory_fit.py` | free memory is what Proxmox calls available; one switch size; memory, not a count, limits switches; starting and reverting check memory |
 | `test_case12_build_from_shape.py` | building from a shape: switch ports and the park bridge, slices and left-out cables, the root password, the serial console, adopting into Mist, the HTTP routes and the Host check |
-| `test_case13_drive.py` | building the fabric in Mist from the sandbox's cables, and checking the cabling three ways |
+| `test_case13_drive.py` | building the fabric in Mist from the sandbox's cables, and checking the cabling three ways, fixing it only when asked |
 | `test_case14_repo_hygiene.py` | the repository ships no real network's identifiers: placeholder UUIDs and MACs only |
 | `test_case15_lab_profile.py` | the profile loads into the settings; a mistake leaves the whole file out and names the key |
 | `test_case16_no_profile_read_only.py` | with no profile every write is refused, and the status says why |
 | `test_case17_profile_guardrails.py` | the guardrails protect what the profile lists, and nothing is hard-coded |
 | `test_case18_mgmt_pool.py` | management addresses come from the profile's pool; a full pool is refused; no vlan leaves fxp0 untagged |
-| `test_case19_real_gear.py` | what real Proxmox and Mist require: only token-settable fields, LACP after each start, certificate checks, cleanup of only what a step created, template-only clones, private Mist snapshots, topologies reverted in full |
-| `test_case20_token_decides.py` | the tokens decide what SimRack may change: Proxmox permissions and the Mist role, no environment switch, and the pause |
-| `test_case21_setup_page.py` | the setup page: what it finds on the host, saving, importing and exporting the profile, the tokens and the addresses they may go to, and refusing a save that would strand a sandbox already built |
-| `test_case22_mcp.py` | the MCP server: the handshake, tools offered by what SimRack may do, the risky tick, Casper's change kinds, jobs that outlast a call, and telling the assistant when the tools change |
+| `test_case19_real_gear.py` | what real Proxmox and Mist require: only token-settable fields, LACP after each start, certificate checks, tokens that never follow a redirect, cleanup of only what a step created, template-only clones, private Mist snapshots, topologies reverted in full |
+| `test_case20_token_decides.py` | the tokens decide what SimRack may change: Proxmox permissions on SimRack's pool, each template it may clone, the Mist role on the profile's org (held there, on its MSP or on an org group), no environment switch, and the pause |
+| `test_case21_setup_page.py` | the setup page: what it finds on the host, saving, importing and exporting the profile, the tokens and the addresses they may go to, the token commands run against a stand-in host, and refusing a save that would strand a sandbox already built |
+| `test_case22_mcp.py` | the MCP server: the handshake, tools offered by what SimRack may do, a first list that waits for SimRack to find out, the risky tick, Casper's change kinds, a cabling check that only looks, jobs that outlast a call, telling the assistant when the tools change, a token that stays with SimRack, the access check in Casper's contract, and the `--read-only` pin |
 
 ## Deploy
 
@@ -309,40 +321,62 @@ change and asks before each change. For Casper, add this to
 
 ```json
 {"mcpServers": {"simrack": {"command": "ssh",
-  "args": ["-T", "-o", "BatchMode=yes", "<ssh host>", "cd /opt/simrack && exec python3 -m simrack mcp"]}}}
+  "args": ["-T", "-o", "BatchMode=yes", "<ssh host>",
+    "cd /opt/simrack && set -a && { [ ! -f simrack.env ] || . ./simrack.env; } && exec python3 -m simrack mcp"]}}}
 ```
 
 Casper gives the server a small environment: if ssh needs your agent, add
-`"env": {"SSH_AUTH_SOCK": "${SSH_AUTH_SOCK}"}`. When SimRack has a
-`SIMRACK_TOKEN`, have the host read it, so it never sits in the assistant's
-config: `cd /opt/simrack && set -a && . ./simrack.env && exec python3 -m simrack mcp`.
+`"env": {"SSH_AUTH_SOCK": "${SSH_AUTH_SOCK}"}`. The host reads `SIMRACK_TOKEN`
+from `simrack.env` when there is one, so the token never sits in the
+assistant's config.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--url` | `http://127.0.0.1:8787` | where SimRack listens |
 | `--wait` | 50 | seconds a tool waits for SimRack before it answers "Still running" with a job number for `job_result`. Keep it under the assistant's own limit for one call: Casper's is 90 s (`"callTimeout"`) |
 | `--poll` | 15 | seconds between looks at SimRack, to tell the assistant when the tools on offer change |
+| `--read-only` | off | offer looks only and refuse every change, whatever SimRack allows. To let changes through again, take it out of `~/.casper/mcp.json` and reconnect |
 
 The tools follow what SimRack may do right now, so a pause or a new token shows
 within `--poll` seconds:
 
 | Tools | Offered |
 |---|---|
-| `state`, `list_sandboxes`, `get_sandbox`, `list_recipes`, `list_shapes`, `check_cabling`, `job_result` | always |
+| `state`, `access_check`, `list_sandboxes`, `get_sandbox`, `list_recipes`, `list_shapes`, `check_cabling`, `job_result` | always |
 | `mist_health`, `mist_save_point` | with a Mist token |
-| `build_sandbox`, `build_from_shape`, `power_node`, `add_cable`, `move_cable`, `remove_cable`, `save_point` | while SimRack may change the lab |
+| `build_sandbox`, `build_from_shape`, `power_node`, `add_cable`, `move_cable`, `remove_cable`, `fix_cabling`, `save_point` | while SimRack may change the lab |
 | `mist_create_site`, `mist_build_fabric`, `adopt_switch` | while it may change the lab and Mist |
 | `tear_down`, `delete_node`, `revert_guests`, `console_command`, and `revert_mist` (which also needs Mist) | as above, and only when the setup page ticks **Assistants** (`[assistants] risky`) |
 
-Looks carry `readOnlyHint`. `check_cabling` mends drifted cables while SimRack
-may change the lab, so then it is labelled a change. Changes that throw work
-away carry `destructiveHint`, and every change carries a kind in
+The **Assistants** tick decides only what the MCP server offers. It is not a
+lock on SimRack's API: anything holding `SIMRACK_TOKEN`, or anything on the
+host when no token is set, can still tear down through the API, and can change
+the tick there too. Keep the token where the assistant cannot read it, and let
+its host ask before each change.
+
+Looks carry `readOnlyHint`: `check_cabling` only looks, and `fix_cabling` puts
+back what drifted. Changes that throw work away carry `destructiveHint`, and
+every change carries a kind in
 `_meta["casper/change-kind"]`: `delete` for `tear_down`, `delete_node`,
 `remove_cable` and `revert_mist`; `disruptive` for `power_node`,
 `revert_guests` and `console_command`; `config` for the rest. In Casper,
 writes start off (`/mcp writes simrack`), deletes stay off until
 `/mcp allow simrack`, and disruptive changes ask every time. Changes run one at
 a time, as they do from the page.
+
+With `--read-only` only the looks above are offered, so `mist_save_point` goes
+too: it writes a file on the host. A change asked for anyway is refused.
+
+`access_check` answers in Casper's `casper/access-check v2` (SimRack's
+`GET /api/access`). For each token it says whether it may change things
+(`read-write`), only look (`read-only`) or SimRack cannot tell (`unknown`),
+and who it is. It reports the tokens, not SimRack: a pause does not change it,
+and `--read-only` shows only as each product's `server_gate`. Proxmox counts
+as read-only when the token lacks a privilege SimRack needs, and gives no role,
+because Proxmox does not say which role granted the privileges. Mist lists in
+`can_change` and `read_only` every org, site and site group the token reaches,
+in any org, not only the profile's. A list Casper could not show whole, such
+as one with an MSP in it, is left out.
 
 ## Agent skill
 

@@ -45,7 +45,7 @@ class MistClient:
         url = f"{self.base}{path}"
         data = json.dumps(payload).encode() if payload is not None else None
         request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("Authorization", f"Token {self.token}")
+        request.add_unredirected_header("Authorization", f"Token {self.token}")
         request.add_header("Accept", "application/json")
         if data is not None:
             request.add_header("Content-Type", "application/json")
@@ -82,6 +82,11 @@ class MistClient:
 
     def sites(self, org_id: str | None = None) -> list[dict]:
         return self._request("GET", f"/orgs/{org_id or self.org_id}/sites") or []
+
+    def org(self, org_id: str | None = None) -> dict:
+        """The org, with its ``msp_id`` and ``orggroup_ids``: what a role held above it would sit on."""
+        reply = self._request("GET", f"/orgs/{org_id or self.org_id}")
+        return reply if isinstance(reply, dict) else {}
 
     def create_site(self, name: str, org_id: str | None = None) -> dict:
         return self._request("POST", f"/orgs/{org_id or self.org_id}/sites", {"name": name}, write=True) or {}
