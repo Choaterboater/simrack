@@ -42,7 +42,7 @@ Writes start off in Casper; the user turns them on with `/mcp writes simrack`.
 2. Save first, in both places, with one label:
    WRITE: `save_point` and `mist_save_point`.
 3. Make one change, then look again. Stop at the first error and show it.
-4. "Still running" with a job number: call `job_result` with it. Never send the change again.
+4. "Still running" with a job: call `job_result` with it, from this session or a new one. Never send the change again.
 
 - WRITE: `build_sandbox` (a recipe, plus `template_vmid` or `image`) or `build_from_shape` builds a sandbox; `with_mist_site` adds its Mist site.
 - WRITE: `power_node`, `add_cable`, `move_cable`, `remove_cable`, `fix_cabling` (puts back what `check_cabling` found drifted).
@@ -55,7 +55,7 @@ Changes have run only against fakes so far: watch the first real one end to end.
 ## Paging and rate limits
 - No paging: `state` returns the whole host.
 - Changes run one at a time; a second waits for the first.
-- A tool waits up to 50 s (`--wait`), then answers with a job number; keep that under Casper's 90 s call limit (`"callTimeout"`).
+- A tool waits up to 50 s (`--wait`), then answers with a job; keep that under Casper's 90 s call limit (`"callTimeout"`).
 - Poll `mist_health` no faster than every 30 s; Mist limits calls per token (HTTP 429).
 - A serial console takes one client: close `qm terminal` first.
 

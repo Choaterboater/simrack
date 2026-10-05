@@ -359,6 +359,19 @@ class FakeProxmox:
         return [c for c in self.called("set_vm_config") if c[1][0] == int(vmid)]
 
 
+class SlowProxmox(FakeProxmox):
+    """A clone that waits to be let go, so a change can be caught mid-way."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.cloning, self.let_go = threading.Event(), threading.Event()
+
+    def clone_vm(self, *args, **kwargs):
+        self.cloning.set()
+        self.let_go.wait(10)
+        return super().clone_vm(*args, **kwargs)
+
+
 class FakeMist:
     #: Roles Mist lets change an org: Super User (admin) and Network Admin (write).
     WRITE_ROLES = ("admin", "write")

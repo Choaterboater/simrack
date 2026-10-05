@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .errors import LabError, NotFound
+from .jobs import Jobs
 from .service import SandboxManager
 from .setup_page import SetupPage
 from .ui import ASSETS, PAGE
@@ -24,7 +25,7 @@ class Router:
         self.patterns: list[tuple[str, str]] = []
 
     def add(self, method: str, pattern: str, handler, *, locked: bool = True) -> None:
-        """``locked`` routes run one at a time; a quick read-only POST can skip the queue."""
+        """``locked`` routes run one at a time, and a caller may have them run as a job; a quick POST can skip the queue."""
         regex = re.compile("^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", pattern) + "$")
         self.routes.append((method, regex, handler, locked))
         self.patterns.append((method, pattern))
@@ -48,11 +49,14 @@ class Router:
         return True
 
 
-def build_router(manager: SandboxManager) -> Router:
+def build_router(manager: SandboxManager, jobs: Jobs | None = None) -> Router:
     router = Router()
+    if jobs is None:
+        jobs = Jobs()
 
     router.add("GET", "/api/state", lambda **_: manager.state())
     router.add("GET", "/api/access", lambda **_: {"products": manager.access.products()})
+    router.add("GET", "/api/jobs/{job}", lambda job, query, **_: jobs.wait(job, query))
 
     def pause(body, **_):
         if not isinstance(body.get("paused"), bool):
@@ -166,6 +170,7 @@ class Handler(BaseHTTPRequestHandler):
     router: Router
     token: str = ""
     write_lock = threading.Lock()
+    jobs: Jobs
 
     def log_message(self, fmt, *args):  # quieter, and never logs the token
         self.server.log(f"{self.address_string()} {fmt % args}")
@@ -203,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return urlparse(origin).netloc == self.headers.get("Host", "")
 
-    def _send(self, status: int, payload, content_type="application/json") -> None:
+    def _send(self, status: int, payload, content_type="application/json", headers: dict | None = None) -> None:
         body = payload if isinstance(payload, bytes) else json.dumps(payload, indent=2, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -211,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -225,7 +232,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, body, content_type)
         if not self._authorised():
             return self._send(401, {"error": "Bad or missing bearer token."})
-        self._dispatch("GET", parsed)
+        body = self._body()
+        if body is not None:
+            self._send(*self._run("GET", parsed, body))
 
     def do_POST(self):  # noqa: N802
         if not self._known_host():
@@ -239,11 +248,37 @@ class Handler(BaseHTTPRequestHandler):
         if self._too_big():
             return
         parsed = urlparse(self.path)
+        body = self._body()
+        if body is None:
+            return
         if not self.router.needs_lock("POST", parsed.path):
-            return self._dispatch("POST", parsed)
+            return self._send(*self._run("POST", parsed, body))
+        if self._prefers_async():
+            return self._start_job(parsed, body)
         # One change at a time: two clones racing for the same vmid would collide.
         with self.write_lock:
-            self._dispatch("POST", parsed)
+            self._send(*self._run("POST", parsed, body))
+
+    def _prefers_async(self) -> bool:
+        """``Prefer: respond-async`` (RFC 7240): the caller wants a job now rather than the answer later."""
+        preferences = ",".join(self.headers.get_all("Prefer") or [])
+        return any(preference.split(";")[0].split("=")[0].strip().lower() == "respond-async" for preference in preferences.split(","))
+
+    def _start_job(self, parsed, body: dict) -> None:
+        """Answer at once with a job that makes the change in its turn, for a caller that cannot wait it out."""
+        try:
+            self.router.match("POST", parsed.path)
+        except LabError as error:
+            return self._send(error.http_status, error.as_dict())
+
+        def work():
+            with self.write_lock:
+                status, payload = self._run("POST", parsed, body)
+            # Kept as it was when the change ended, not as a live object the lab goes on changing.
+            return status, json.loads(json.dumps(payload, default=str))
+
+        job = self.jobs.start(f"POST {parsed.path}", work)
+        self._send(202, job.view(), headers={"Location": f"/api/jobs/{job.name}", "Preference-Applied": "respond-async"})
 
     def _content_length(self) -> int:
         try:
@@ -272,7 +307,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(413, {"error": f"That is too large ({length // 1024} KB).", "detail": f"The limit is {MAX_BODY // (1024 * 1024)} MB. Send only the topology, the switches and their port stats."})
         return True
 
-    def _dispatch(self, method: str, parsed) -> None:
+    def _body(self) -> dict | None:
+        """The request's JSON object, or None once a 400 has said why it is not one."""
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         try:
@@ -280,18 +316,23 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ValueError("body must be a JSON object")
         except (json.JSONDecodeError, ValueError) as error:
-            return self._send(400, {"error": f"Invalid JSON body: {error}"})
+            self._send(400, {"error": f"Invalid JSON body: {error}"})
+            return None
+        return body
+
+    def _run(self, method: str, parsed, body: dict) -> tuple[int, object]:
+        """The route's answer: its HTTP status and what to send."""
         try:
             handler, params = self.router.match(method, parsed.path)
             result = handler(body=body, query=parse_qs(parsed.query), **params)
-            self._send(200, result if result is not None else {"ok": True})
+            return 200, result if result is not None else {"ok": True}
         except LabError as error:
-            self._send(error.http_status, error.as_dict())
+            return error.http_status, error.as_dict()
         except ValueError as error:  # input validation (names, ports)
-            self._send(400, {"error": str(error)})
+            return 400, {"error": str(error)}
         except Exception as error:  # noqa: BLE001 - the UI needs a message, not a traceback
             self.server.log(f"unhandled: {type(error).__name__}: {error}")
-            self._send(500, {"error": f"{type(error).__name__}: {error}"})
+            return 500, {"error": f"{type(error).__name__}: {error}"}
 
 
 def serve(manager: SandboxManager, host: str, port: int, token: str = ""):
@@ -300,7 +341,8 @@ def serve(manager: SandboxManager, host: str, port: int, token: str = ""):
             "Refusing to bind a write-capable API to a public address without a token.",
             detail="Set SIMRACK_TOKEN, or bind 127.0.0.1 and use an SSH tunnel.",
         )
-    handler = type("BoundHandler", (Handler,), {"router": build_router(manager), "token": token, "write_lock": threading.Lock()})
+    jobs = Jobs()
+    handler = type("BoundHandler", (Handler,), {"router": build_router(manager, jobs), "token": token, "write_lock": threading.Lock(), "jobs": jobs})
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.log = lambda message: print(f"[simrack] {message}", flush=True)
     print(f"[simrack] listening on http://{host}:{port} (auth={'bearer' if token else 'none'})", flush=True)

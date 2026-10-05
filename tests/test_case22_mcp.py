@@ -32,6 +32,7 @@ from tests.fakes import (
     LAB_PROFILE,
     FakeProxmox,
     RedirectingPair,
+    SlowProxmox,
     TempDir,
     lab_settings,
     make_manager,
@@ -443,17 +444,8 @@ class TestAnAssistantUsesTheTools(McpCase):
         self.assertIn(bridge, self.proxmox.networks)
 
 
-class SlowProxmox(FakeProxmox):
-    """A clone that waits to be let go, so a change can be caught mid-way."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.cloning, self.let_go = threading.Event(), threading.Event()
-
-    def clone_vm(self, *args, **kwargs):
-        self.cloning.set()
-        self.let_go.wait(10)
-        return super().clone_vm(*args, **kwargs)
+#: How a tool hands over a change that is still running: the job SimRack keeps it as.
+JOB = re.compile(r"job_result with job ([0-9a-f]{6}-[0-9]+)")
 
 
 class TestALongChange(McpCase):
@@ -473,7 +465,7 @@ class TestALongChange(McpCase):
         started = assistant.reply_to(building)["result"]
 
         self.assertFalse(started.get("isError"), started)
-        job = int(re.search(r"job_result with job (\d+)", started["content"][0]["text"]).group(1))
+        job = JOB.search(started["content"][0]["text"]).group(1)
         self.assertTrue(self.proxmox.cloning.is_set())
         self.assertIn(f"job {job}", call(assistant, "job_result", job=job)["content"][0]["text"])
 
@@ -485,14 +477,54 @@ class TestALongChange(McpCase):
         self.assertFalse(finished.get("isError"), finished)
         self.assertEqual(said(finished)["name"], "demo")
 
+    def test_simrack_keeps_the_job_so_a_new_session_can_ask_how_it_ended(self):
+        first = self.connect("--wait", "0.5")
+        first.hello()
+        started = call(first, "build_sandbox", name="demo", recipe="single-switch", template_vmid=TEMPLATE)
+        job = JOB.search(started["content"][0]["text"]).group(1)
+        first.close()
+
+        self.proxmox.let_go.set()
+        second = self.connect()
+        second.hello()
+        finished = call(second, "job_result", job=job)
+
+        self.assertFalse(finished.get("isError"), finished)
+        self.assertEqual(said(finished)["name"], "demo")
+
+    def test_a_change_simrack_refuses_comes_back_in_simrack_s_words(self):
+        assistant = self.connect()
+        assistant.hello()
+        self.proxmox.let_go.set()
+        call(assistant, "build_sandbox", name="demo", recipe="single-switch", template_vmid=TEMPLATE)
+
+        again = call(assistant, "build_sandbox", name="demo", recipe="single-switch", template_vmid=TEMPLATE)
+
+        self.assertIs(again.get("isError"), True, again)
+        self.assertIn("demo", again["content"][0]["text"])
+        self.assertNotIn("job", again["content"][0]["text"], "a change that ends within the wait is answered, not handed over")
+
     def test_asking_after_a_job_simrack_never_had_says_so(self):
         assistant = self.connect()
         assistant.hello()
 
-        result = call(assistant, "job_result", job=99)
+        result = call(assistant, "job_result", job="beef00-99")
 
         self.assertIs(result.get("isError"), True)
-        self.assertIn("no job 99", result["content"][0]["text"])
+        self.assertIn("no job beef00-99", result["content"][0]["text"])
+        self.assertIn("restarts", result["content"][0]["text"])
+
+    def test_a_job_is_named_the_way_simrack_gave_it(self):
+        assistant = self.connect()
+        assistant.hello()
+
+        for wrong in (99, "99", "../state"):
+            with self.subTest(job=wrong):
+                result = call(assistant, "job_result", job=wrong)
+
+                self.assertIs(result.get("isError"), True)
+                self.assertIn("job", result["content"][0]["text"])
+                self.assertNotIn("no job", result["content"][0]["text"], "SimRack is not asked about a job it cannot have given")
 
 
 class TestTheToolsFollowSimRack(McpCase):

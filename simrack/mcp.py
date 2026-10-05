@@ -8,13 +8,13 @@ stdout carries only the protocol. Standard library only, like the rest of SimRac
 
 from __future__ import annotations
 
-import itertools
 import json
 import os
 import re
 import string
 import sys
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.parse
@@ -22,6 +22,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from . import __version__
+from .jobs import LONGEST_WAIT
 
 #: Newest first. An assistant asking for a version not listed is answered in the newest.
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -31,10 +32,10 @@ STATE_TIMEOUT = 4.0
 #: The same, until SimRack has answered once and there is a state to fall back on. Its first answer can be
 #: slower: it asks Proxmox and Mist what its tokens may do when it has not asked lately.
 FIRST_STATE_TIMEOUT = 15.0
-#: How long a look may take before SimRack counts as not answering.
+#: How long a look, or handing SimRack a change, may take before SimRack counts as not answering.
 LOOK_TIMEOUT = 60.0
-#: Building and tearing down wait on Proxmox and Mist, and can take many minutes.
-CHANGE_TIMEOUT = 3600.0
+#: How much longer than it was asked to wait SimRack may take to say how a job stands.
+JOB_SLACK = 10.0
 
 INSTRUCTIONS = (
     "SimRack builds throwaway sandboxes of vJunos switches on a Proxmox host and can mirror them in Mist. "
@@ -67,6 +68,7 @@ NEW_NAME = {
     "pattern": "^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$",
     "description": "A name for the new sandbox: 3 to 32 lowercase letters, digits or hyphens.",
 }
+JOB = {"type": "string", "pattern": "^[0-9a-f]{6}-[1-9][0-9]{0,8}$", "description": "The job a tool handed over, like 3f9a0c-7."}
 BUILD_OPTIONS = {
     "template_vmid": {"type": "integer", "description": "The vJunos template to clone: one of state's templates. Give this or image."},
     "image": {"type": "string", "description": "A disk image or installer to boot instead: one of state's images. Give this or template_vmid."},
@@ -162,10 +164,11 @@ TOOLS = (
         "job_result",
         "Job result",
         "The outcome of a change that was still running when its tool answered. "
+        "SimRack keeps the job, so a new session can ask too. "
         "Waits for it as long as a change tool does; call again while it is still running.",
         "",
         "",
-        properties={"job": {"type": "integer", "description": "The job number the tool gave."}},
+        properties={"job": JOB},
         required=("job",),
     ),
     _sandbox_tool(
@@ -403,23 +406,28 @@ class Refused(Exception):
 
 BY_NAME = {tool.name: tool for tool in TOOLS}
 JSON_TYPES = {"string": str, "integer": int, "boolean": bool, "array": list}
-#: Finished jobs kept for job_result.
-KEPT_JOBS = 50
 
 
-@dataclass
-class Job:
-    """A tool call SimRack works on, kept so the assistant can come back for how it ended."""
-
-    number: int
-    tool: str
-    done: threading.Event = field(default_factory=threading.Event)
-    outcome: dict = field(default_factory=dict)
+def plain(text: str) -> dict:
+    """A tool's answer in words."""
+    return {"content": [{"type": "text", "text": text}]}
 
 
 def trouble(text: str) -> dict:
     """A tool's answer when it could not do what was asked: the assistant reads why and can try again."""
-    return {"content": [{"type": "text", "text": text}], "isError": True}
+    return {**plain(text), "isError": True}
+
+
+def fine(said) -> dict:
+    """A tool's answer when SimRack did what was asked: SimRack's own JSON."""
+    return plain(json.dumps(said, separators=(",", ":")))
+
+
+def complaint(problem, fallback: str) -> str:
+    """SimRack's own words for why it would not, or ``fallback`` when it gave none."""
+    if not isinstance(problem, dict) or not problem.get("error"):
+        return fallback
+    return " ".join(str(problem[part]) for part in ("error", "detail") if problem.get(part))
 
 
 def misfits(tool: Tool, arguments) -> list[str]:
@@ -466,9 +474,6 @@ class Server:
         self.state: dict = {}
         #: How long a call waits for SimRack before it hands the assistant a job instead.
         self.wait = wait
-        self.jobs: dict[int, Job] = {}
-        self.job_numbers = itertools.count(1)
-        self.jobs_lock = threading.Lock()
         #: Seconds between looks at SimRack, once the assistant has a list of tools that could go stale.
         self.poll = poll
         self.told = ""
@@ -585,66 +590,68 @@ class Server:
         return (state.get("mist") or {}).get("read_only_reason") or "SimRack may not change Mist right now."
 
     def answer(self, ident, tool: Tool, arguments: dict) -> None:
-        self.reply(ident, self.call(tool, arguments))
+        try:
+            result = self.call(tool, arguments)
+        except Exception as error:  # A fault here must not leave the assistant waiting for an answer for ever.
+            traceback.print_exc(file=sys.stderr)
+            result = trouble(f"SimRack's MCP server failed while running {tool.name}: {error!r}. SimRack's page shows what was done.")
+        self.reply(ident, result)
 
     def call(self, tool: Tool, arguments: dict) -> dict:
         problems = misfits(tool, arguments)
         if problems:
             return trouble(" ".join(problems))
         if tool.name == "job_result":
-            with self.jobs_lock:
-                job = self.jobs.get(arguments["job"])
-            if job is None:
-                return trouble(f"There is no job {arguments['job']}. SimRack's MCP server keeps the last {KEPT_JOBS} finished jobs until it restarts.")
-            return self.outcome(job)
-        return self.outcome(self.start(tool, arguments))
-
-    def start(self, tool: Tool, arguments: dict) -> Job:
-        with self.jobs_lock:
-            job = Job(next(self.job_numbers), tool.name)
-            self.jobs[job.number] = job
-            for number in [number for number, kept in self.jobs.items() if kept.done.is_set()][:-KEPT_JOBS]:
-                del self.jobs[number]
-        threading.Thread(target=self.work, args=(job, tool, arguments), daemon=True).start()
-        return job
-
-    def work(self, job: Job, tool: Tool, arguments: dict) -> None:
-        try:
-            job.outcome = self.use(tool, arguments)
-        except Exception as error:  # A fault here must not leave the assistant waiting on the job for ever.
-            traceback.print_exc(file=sys.stderr)
-            job.outcome = trouble(f"SimRack's MCP server failed while running {tool.name}: {error!r}. SimRack's page shows what was done.")
-        finally:
-            job.done.set()
-
-    def outcome(self, job: Job) -> dict:
-        if job.done.wait(self.wait):
-            return job.outcome
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"Still running: SimRack carries on with {job.tool}. Call job_result with job {job.number} to wait for how it ends.",
-                }
-            ]
-        }
+            return self.follow(arguments["job"], "")
+        return self.use(tool, arguments)
 
     def use(self, tool: Tool, arguments: dict) -> dict:
-        """Have SimRack do what the tool does, once SimRack allows it."""
+        """Have SimRack do what the tool does, once SimRack allows it. SimRack runs a change as a job."""
         refusal = self.refusal(tool)
         if refusal:
             return trouble(refusal)
         in_path = {field for _, field, _, _ in string.Formatter().parse(tool.path) if field}
         path = tool.path.format(**{field: urllib.parse.quote(str(arguments[field]), safe="") for field in in_path})
         body = {**{field: value for field, value in arguments.items() if field not in in_path}, **tool.body}
-        timeout = LOOK_TIMEOUT if tool.method == "GET" else CHANGE_TIMEOUT
         try:
-            said = self.http(tool.method, path, body, timeout=timeout)
+            if tool.method == "GET":
+                said = self.http("GET", path, timeout=LOOK_TIMEOUT)
+                return self.gated(said) if tool.name == "access_check" else fine(said)
+            status, said = self.exchange("POST", path, body, timeout=LOOK_TIMEOUT, headers={"Prefer": "respond-async"})
         except (Refused, Unreachable) as problem:
             return trouble(str(problem))
-        if tool.name == "access_check":
-            return self.gated(said)
-        return {"content": [{"type": "text", "text": json.dumps(said, separators=(",", ":"))}]}
+        if status != 202:  # SimRack answers at once when there is nothing to wait for, like pausing.
+            return fine(said)
+        job = said.get("job") if isinstance(said, dict) else None
+        if not isinstance(job, str):
+            return trouble("SimRack took the change but did not say which job it is. Update SimRack.")
+        return self.follow(job, tool.name)
+
+    def follow(self, job: str, name: str) -> dict:
+        """How the job ended, or, if it is still running when this call has waited long enough, the job to ask about."""
+        deadline = time.monotonic() + self.wait
+        while True:
+            ask = min(max(deadline - time.monotonic(), 0.0), LONGEST_WAIT)
+            try:
+                said = self.http("GET", f"/api/jobs/{urllib.parse.quote(job, safe='')}?wait={ask:.3f}", timeout=ask + JOB_SLACK)
+            except Refused as problem:
+                return trouble(str(problem))
+            except Unreachable as problem:
+                return trouble(f"{problem} SimRack may still be working on it: call job_result with job {job} to ask again.")
+            state = said.get("state") if isinstance(said, dict) else None
+            if state == "done":
+                status, result = said.get("status"), said.get("result")
+                if not isinstance(status, int) or status >= 400:
+                    return trouble(complaint(result, f"SimRack answered {status}."))
+                return fine(result)
+            if state != "running":
+                return trouble(f"SimRack's answer about job {job} is not one this server can read. Update SimRack.")
+            # SimRack waits at most LONGEST_WAIT per ask; only a call allowed to wait longer asks again.
+            if ask < LONGEST_WAIT:
+                return plain(
+                    f"Still running: SimRack carries on with {name or said.get('what', 'the change')}. "
+                    f"Call job_result with job {job} to wait for how it ends."
+                )
 
     def gated(self, said: dict) -> dict:
         """SimRack's answer in Casper's contract, with whether this server lets changes through."""
@@ -653,10 +660,15 @@ class Server:
             return trouble("SimRack's access answer is not one Casper can read. Update SimRack.")
         gate = {"flag": "--read-only", "state": "off" if self.read_only else "on"}
         answer = {"contract": ACCESS_CONTRACT, "products": [{**product, "server_gate": gate} for product in products]}
-        return {"content": [{"type": "text", "text": json.dumps(answer, separators=(",", ":"))}]}
+        return fine(answer)
 
     def http(self, method: str, path: str, body: dict | None = None, *, timeout: float) -> dict:
-        headers = {"Accept": "application/json"}
+        """SimRack's JSON answer. Raises Refused, in SimRack's own words, or Unreachable."""
+        return self.exchange(method, path, body, timeout=timeout)[1]
+
+    def exchange(self, method: str, path: str, body: dict | None = None, *, timeout: float, headers: dict | None = None) -> tuple:
+        """SimRack's status and JSON answer, for when how SimRack took the request matters."""
+        headers = {"Accept": "application/json", **(headers or {})}
         data = None
         if method == "POST":
             data = json.dumps(body or {}).encode()
@@ -666,16 +678,14 @@ class Server:
             request.add_unredirected_header("Authorization", f"Bearer {self.token}")
         try:
             with self.opener.open(request, timeout=timeout) as reply:
-                return json.loads(reply.read() or b"{}")
+                return reply.status, json.loads(reply.read() or b"{}")
         except urllib.error.HTTPError as error:
             with error:
                 try:
                     problem = json.loads(error.read())
                 except (OSError, ValueError):
                     problem = {}
-            if not isinstance(problem, dict) or not problem.get("error"):
-                problem = {"error": f"SimRack answered {error.code} {error.reason}."}
-            raise Refused(" ".join(str(problem[part]) for part in ("error", "detail") if problem.get(part))) from error
+            raise Refused(complaint(problem, f"SimRack answered {error.code} {error.reason}.")) from error
         except (OSError, ValueError) as error:
             raise Unreachable(f"SimRack is not answering at {self.url}: {getattr(error, 'reason', error)}.") from error
 

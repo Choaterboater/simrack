@@ -275,7 +275,8 @@ python3 -m unittest discover -s tests -t . -v
 | `test_case19_real_gear.py` | what real Proxmox and Mist require: only token-settable fields, LACP after each start, certificate checks, tokens that never follow a redirect, cleanup of only what a step created, template-only clones, private Mist snapshots, topologies reverted in full |
 | `test_case20_token_decides.py` | the tokens decide what SimRack may change: Proxmox permissions on SimRack's pool, each template it may clone, the Mist role on the profile's org (held there, on its MSP or on an org group), no environment switch, and the pause |
 | `test_case21_setup_page.py` | the setup page: what it finds on the host, saving, importing and exporting the profile, the tokens and the addresses they may go to, the token commands run against a stand-in host, and refusing a save that would strand a sandbox already built |
-| `test_case22_mcp.py` | the MCP server: the handshake, tools offered by what SimRack may do, a first list that waits for SimRack to find out, the risky tick, Casper's change kinds, a cabling check that only looks, jobs that outlast a call, telling the assistant when the tools change, a token that stays with SimRack, the access check in Casper's contract, and the `--read-only` pin |
+| `test_case22_mcp.py` | the MCP server: the handshake, tools offered by what SimRack may do, a first list that waits for SimRack to find out, the risky tick, Casper's change kinds, a cabling check that only looks, jobs that outlast a call and the MCP server, telling the assistant when the tools change, a token that stays with SimRack, the access check in Casper's contract, and the `--read-only` pin |
+| `test_case23_jobs.py` | changes as jobs: `Prefer: respond-async` gets a job at once, `GET /api/jobs/{job}` waits for how it ended, SimRack's own words when it refuses, only changes become jobs, jobs taking their turn with changes from the page, the last 50 finished jobs kept, and a restart naming its jobs afresh |
 
 ## Deploy
 
@@ -333,7 +334,7 @@ assistant's config.
 | Option | Default | Meaning |
 |---|---|---|
 | `--url` | `http://127.0.0.1:8787` | where SimRack listens |
-| `--wait` | 50 | seconds a tool waits for SimRack before it answers "Still running" with a job number for `job_result`. Keep it under the assistant's own limit for one call: Casper's is 90 s (`"callTimeout"`) |
+| `--wait` | 50 | seconds a tool waits for SimRack before it answers "Still running" with a job for `job_result`. Keep it under the assistant's own limit for one call: Casper's is 90 s (`"callTimeout"`) |
 | `--poll` | 15 | seconds between looks at SimRack, to tell the assistant when the tools on offer change |
 | `--read-only` | off | offer looks only and refuse every change, whatever SimRack allows. To let changes through again, take it out of `~/.casper/mcp.json` and reconnect |
 
@@ -363,6 +364,16 @@ every change carries a kind in
 writes start off (`/mcp writes simrack`), deletes stay off until
 `/mcp allow simrack`, and disruptive changes ask every time. Changes run one at
 a time, as they do from the page.
+
+SimRack, not the MCP server, keeps each change as a job, so a timeout, a
+restarted server or a new session loses nothing. The server sends a change with
+`Prefer: respond-async`; SimRack answers `202` with the job at once and makes
+the change in its turn. The server then asks `GET /api/jobs/{job}?wait=<seconds>`
+(SimRack waits at most 60 s an ask) until the change ends or `--wait` runs out,
+and then the tool answers "Still running" with the job. `job_result` asks
+again, from this session or a new one. SimRack keeps the last 50 finished jobs
+until it restarts; its page shows what was done either way. Scripts can do the
+same.
 
 With `--read-only` only the looks above are offered, so `mist_save_point` goes
 too: it writes a file on the host. A change asked for anyway is refused.
