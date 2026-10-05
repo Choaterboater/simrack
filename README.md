@@ -219,7 +219,7 @@ Environment, both optional. Everything else is set on the setup page.
 
 | Variable | Meaning |
 |---|---|
-| `SIMRACK_STATE_DIR` | where the lab profile, the tokens, sandboxes, shapes and passwords are kept (default `/opt/simrack/state`) |
+| `SIMRACK_STATE_DIR` | where the lab profile, the tokens, sandboxes, shapes and passwords are kept (default `/opt/simrack/state`). The unit lets SimRack write only there: point its `ReadWritePaths=` at a new folder too |
 | `SIMRACK_TOKEN` | a bearer token for the page's API. Required to bind anything but 127.0.0.1; once set, every API call needs it, the MCP server's too |
 
 The page follows the computer's light or dark setting. Day looks like the Mist

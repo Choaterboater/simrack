@@ -17,8 +17,11 @@ EnvironmentFile=-/opt/simrack/simrack.env
 ExecStart=/usr/bin/python3 -m simrack serve --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=5
-# The app only needs to read its own directory and talk to HTTPS APIs.
+# The host is read-only to SimRack but for its state. /sys stays writable for
+# the bridge settings, so no ProtectKernelTunables=. A SIMRACK_STATE_DIR
+# elsewhere needs ReadWritePaths= changed to match.
 NoNewPrivileges=yes
+ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/opt/simrack/state
