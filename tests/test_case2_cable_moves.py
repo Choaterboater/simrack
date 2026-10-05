@@ -78,7 +78,7 @@ class TestCableMovesReachProxmox(unittest.TestCase):
 
     def test_cabling_a_live_lab_port_or_bridge_is_refused(self):
         with self.assertRaises(GuardrailViolation):
-            self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/3", "bl-4650-01", "ge-0/0/0")
+            self.manager.cable(self.sandbox, "sbx-acc-01", "ge-0/0/3", "border-01", "ge-0/0/0")
         with self.assertRaises(GuardrailViolation):
             self.manager.move_cable(self.sandbox, "lab1", "sbx-acc-01", "ge-0/0/2")
         with self.assertRaises(NotFound):

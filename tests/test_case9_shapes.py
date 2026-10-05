@@ -56,12 +56,12 @@ class TestShapeFromMist(unittest.TestCase):
         self.assertEqual(
             mapping,
             {
-                "sbx-bl-01": ("bl-4650-01", "border"),
-                "sbx-bl-02": ("bl-4650-02", "border"),
-                "sbx-core-01": ("core-4650-01", "core"),
-                "sbx-core-02": ("core-4650-02", "core"),
-                "sbx-acc-01": ("acc-4400-01", "access"),
-                "sbx-acc-02": ("acc-4400-02", "access"),
+                "sbx-bl-01": ("border-01", "border"),
+                "sbx-bl-02": ("border-02", "border"),
+                "sbx-core-01": ("core-01", "core"),
+                "sbx-core-02": ("core-02", "core"),
+                "sbx-acc-01": ("access-01", "access"),
+                "sbx-acc-02": ("access-02", "access"),
             },
         )
 
@@ -112,7 +112,7 @@ class TestShapeFromMist(unittest.TestCase):
         doc = bundle()
         names = {d["mac"]: d["name"] for d in doc["devices"]}
         for row in doc["ports"]:
-            if not names[row["mac"]].startswith("bl-") and row["port_id"].startswith("ge-0/0/"):
+            if not names[row["mac"]].startswith("border-") and row["port_id"].startswith("ge-0/0/"):
                 row["port_id"] = "et-0/0/" + str(48 + int(row["port_id"].rsplit("/", 1)[1]))
         shape = shape_from_mist(doc)
         self.assertEqual(cables(shape), LIVE_CABLES)
@@ -164,7 +164,7 @@ class TestShapeFromMist(unittest.TestCase):
         doc = bundle()
         mixed = {"documents": [{"results": doc["ports"], "limit": 1000}, doc["devices"], doc["topology"]]}
         self.assertEqual(cables(shape_from_mist(mixed)), LIVE_CABLES)
-        self.assertEqual(nodes(shape_from_mist(mixed))["sbx-bl-01"]["from"], "bl-4650-01")
+        self.assertEqual(nodes(shape_from_mist(mixed))["sbx-bl-01"]["from"], "border-01")
         bare = shape_from_mist(doc["topology"])
         self.assertEqual(len(bare["nodes"]), 6)
 
