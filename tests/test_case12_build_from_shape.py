@@ -582,6 +582,18 @@ class TestAdopt(unittest.TestCase):
         self.assertIsNone(device.root_password)
         self.assertEqual(device.state, "login")
 
+    def test_a_delete_line_vjunos_has_no_statement_for_is_not_a_refusal(self):
+        # Mist's real command ends "delete system phone-home"; vJunos 26.2 has no
+        # phone-home, so it answers "syntax error." A delete can only remove config.
+        lines = [*LINES, "delete system phone-home"]
+        device = FakeConsole(fail_on="phone-home")
+        self.assertEqual(adopt(device, HOST, PASSWORD, lines), {"mgmt_ip": "192.0.2.37"})
+        self.assertIn("delete system phone-home", device.lines)
+        self.assertNotIn("rollback 0", device.lines)
+        self.assertEqual(device.config[-len(LINES):], LINES)
+        self.assertEqual(device.host, HOST)
+        self.assertEqual(device.state, "login")
+
     def test_a_refused_commit_is_rolled_back(self):
         device = FakeConsole(commit_fails=True)
         with self.assertRaises(BackendError) as caught:

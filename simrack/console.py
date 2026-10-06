@@ -280,7 +280,10 @@ class _Adoption:
             self._step(f"set system host-name {self.host}", "the host name")
             self._step("set interfaces fxp0 unit 0 family inet dhcp", "DHCP on fxp0")
             for number, line in enumerate(self.lines, 1):
-                self._step(line, f"Mist adoption line {number} of {len(self.lines)}")
+                # Mist ends with "delete system phone-home", which vJunos has no statement
+                # for. A delete can only remove config, so it is best effort.
+                label = f"Mist adoption line {number} of {len(self.lines)}"
+                self._step(line, label, check=not line.startswith("delete "))
             self._commit()
         except _Refused as refused:
             self._rollback(refused)
