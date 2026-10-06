@@ -50,13 +50,14 @@ Writes start off in Casper; the user turns them on with `/mcp writes simrack`.
 - WRITE: once the setup page ticks Assistants: `tear_down` (`keep_mist` keeps the site), `delete_node`, `revert_mist`, `revert_guests`, `console_command`. Casper counts the first three and `remove_cable` as deletes: off until `/mcp allow simrack`.
 - WRITE: `SIMRACK_HOST=<ssh host> ./deploy/deploy.sh` copies the checkout to `/opt/simrack`, runs the tests there and restarts the service.
 
-Changes have run only against fakes so far: watch the first real one end to end.
+Real gear so far: one IP Clos fabric build. Watch tear down, the reverts, collapsed core and ESI-LAG end to end.
 
 ## Paging and rate limits
 - No paging: `state` returns the whole host.
 - Changes run one at a time; a second waits for the first.
 - A tool waits up to 50 s (`--wait`), then answers with a job; keep that under Casper's 90 s call limit (`"callTimeout"`).
 - Poll `mist_health` no faster than every 30 s; Mist limits calls per token (HTTP 429).
+- After `mist_build_fabric`, wait ~90 s before judging `mist_health`: Mist pushes twice; the first can fail.
 - A serial console takes one client: close `qm terminal` first.
 
 ## Common traps

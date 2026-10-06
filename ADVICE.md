@@ -163,6 +163,8 @@ Order matters: roll back the guests first, then push the Mist config, then verif
 | Mist pushed WAN Edge config and broke OSPF | Config management was enabled on a device with an empty template | Keep config management **off** for a vSRX run from the CLI. Mist WAN Edge does not fit a CLI OSPF/BGP design. |
 | GBP tags render, counters stay 0 | vJunos does not enforce VXLAN GBP (the feature is unlicensed on vJunos) | Not a bug. Use a physical EX for a real GBP demo. |
 | A sandbox switch will not join the site | Serial collision, or it was never adopted | Compare serials on every clone (step 3 above), then click **Adopt again** in the sandbox's Join Mist checklist. |
+| A leaf refuses Mist's commit: "ovsdb, multicast-group, ingress-node-replication cannot be configured together" | No port on that switch uses the networks, so Mist builds no EVPN instance and the default VLAN's VNI lands outside one | **Build again** in Join Mist: it gives the switch a `clients` trunk on its last free port. By hand, give any port a usage that carries the networks. |
+| `SW_CONFIG_FAILED` in Mist's events straight after **Build fabric**, yet Health says `COMMITED` a minute later | Mist pushes twice: at once when the site setting changes, before the device configs land, and again when its EVPN topology job ends, about a minute later | Judge the second push: wait about 90 s, then read Health. Each switch's commit list in Mist's device stats names the version that took. |
 | "SimRack is read-only: no lab profile is loaded" | The setup page has not been saved, or the saved profile has a mistake (a key an older version used counts) | Open **Setup**. It names any mistake; fix it and save. |
 | "SimRack is read-only: the Proxmox token may not change the lab" | The token lacks a privilege; the detail names each one and where | Run the setup page's token commands again, or grant what is named. SimRack asks Proxmox again within 30 s. |
 | "Changes are paused" | Someone pressed **Pause**; it lasts across restarts | **Resume** in the top bar. |
@@ -205,33 +207,48 @@ border router means the border path is broken, not Mist.
 
 ## 6. Honest gaps in this build
 
-- Nothing has been built on a real host. Every change, from Build sandbox to
-  Tear down, is tested against fakes only.
-- The setup page, the token checks and the MCP server have not run on a real
-  host yet. Check that the page lists your live lab as protected, and that its
-  token commands work on your Proxmox version, before the first build.
+- One real host so far: a three-switch IP Clos slice (border, core, access) of
+  an imported shape, on vJunos-switch 26.2R1.7 and a Mist cloud org. Build
+  from shape, Adopt, Build fabric in Mist, Check cabling and Health ran there:
+  every switch committed Mist's config, and underlay and EVPN overlay BGP came
+  up. Tear down, Revert Mist and Revert Proxmox have not run on real gear.
+- The setup page and its token commands worked on that host; the MCP server has
+  not run on a real host. Still check that the page lists your live lab as
+  protected before the first build.
 - Sandbox bridges are runtime-only. The service re-creates missing ones at
   start-up (while SimRack may change the lab), so start the service before
   starting sandbox guests after a host reboot.
 - vmids for sandbox LXC clients (350-399 by default) share the switch range.
 - Adoption is driven from the page (Join Mist → Adopt) over the serial console.
-  The console script is tested against scripted Junos replies only, so watch
-  the first real adoption. The serial socket takes one client at a time: close
+  It adopted three vJunos switches on the real host once a `delete` line that
+  Junos refuses no longer stopped it (Mist's adoption commands delete things
+  that may not be there). The serial socket takes one client at a time: close
   any open `qm terminal` first.
-- Build fabric in Mist is tested against a fake Mist only. Until the first live
-  build, these are unverified: whether Mist accepts the topology's
-  `switch_configs` and the IRBs, how it represents collapsed-core and ESI-LAG
-  links, whether a device PUT replaces or merges, and whether port stats carry
-  each switch's MAC. Watch the first build; if it goes wrong, revert Mist to
-  its `before-fabric-…` point and fix from there.
+- The first live fabric build taught three things, now built in. Mist answers
+  200 to a topology but ignores its `switch_configs`, so each switch's config
+  is merged onto its device instead. Mist builds a switch's EVPN instance,
+  VLANs and IRBs only for networks some port uses, so each switch that holds
+  the networks gets a `clients` trunk on its last free port (section 4 has the
+  error without it). Device rows carry no status, so Health reads Mist's device
+  stats. Port stats did carry each switch's MAC.
+- Collapsed-core and ESI-LAG fabrics have not been built in Mist on real gear.
+  Watch the first of each; if it goes wrong, revert Mist to its
+  `before-fabric-…` point and fix from there.
+- No client traffic has crossed a built fabric. No recipe makes client
+  containers yet, and the `clients` port has no cable, so it stays parked and
+  down; the commit does not need it up.
+- Tear down deletes the sandbox's Mist site, but its switches stay in the org's
+  inventory, unassigned and disconnected. Release them there (Organization →
+  Inventory) so they do not pile up.
 - A switch booted from an image gets `smbios1` product `VM-VEX` and `cpu: host`
   instead of the root-only `args` line in step 2. Whether vJunos runs that way
   is unverified: check the first one reaches the Junos prompt.
 - Revert Mist puts each topology back exactly as Mist returned it. Whether Mist
   accepts its own computed fields back is unverified; if it refuses, revert
   sends members and roles, as the fabric build does, and says so in the notes.
-- Check cabling assumes net1 is ge-0/0/0. When LLDP disagrees on a cable that
-  Proxmox has right, it says so; that mapping is the first thing to check.
+- Check cabling assumes net1 is ge-0/0/0. LLDP confirmed it on vJunos-switch
+  26.2R1.7; another image may map differently. When LLDP disagrees on a cable
+  that Proxmox has right, it says so; that mapping is the first thing to check.
 - The front end has no authentication of its own beyond a bearer token. It binds
   127.0.0.1 by default; use an SSH tunnel, not a public bind.
 - The setup page's Proxmox token may change only guests in the Proxmox resource

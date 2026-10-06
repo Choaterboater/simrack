@@ -20,14 +20,14 @@ fakes; only part of it has run on a real host.
 
 | Stage | What it adds | On a real host |
 |---|---|---|
-| Crawl | recipes, sandboxes, cables, power, snapshots, teardown, the safety model | read-only only: the inventory, memory and the protected lab. Nothing has been built with writes on. |
+| Crawl | recipes, sandboxes, cables, power, snapshots, teardown, the safety model | yes, in part: a three-switch sandbox built and cabled with writes on. Teardown and the reverts have not run there yet. |
 | Walk | importing a live Mist fabric as a shape | yes: a live fabric imported read-only, cabled from LLDP |
-| Run | building a sandbox from a shape, adopting its switches into Mist over the serial console | **untested on real gear** |
-| Drive | building the sandbox's fabric in Mist, checking the cabling three ways | **untested on real gear** |
+| Run | building a sandbox from a shape, adopting its switches into Mist over the serial console | yes: a three-switch slice of an imported shape, every switch adopted |
+| Drive | building the sandbox's fabric in Mist, checking the cabling three ways | yes, for an IP Clos slice: every switch committed, underlay and EVPN overlay BGP up, cabling checked. Not yet for collapsed core or ESI-LAG. |
 
-The setup page, token-decided access and the MCP server came last: this version
-has not run on a real host yet. Every change asks first, so look around before
-you answer Yes, and read `ADVICE.md` before the first build.
+The setup page and token-decided access have run on a real host; the MCP server
+has not. Every change asks first, so look around before you answer Yes, and
+read `ADVICE.md` before the first build.
 
 ## What it does
 
@@ -409,12 +409,11 @@ cp -R skills/simrack ~/.agents/skills/    # agents that read ~/.agents/skills
 
 ## Known gaps
 
-Read `ADVICE.md` section 6. The important ones: nothing has been built on a
-real host; Run and Drive are untested on real gear (Build fabric in Mist is
-tested against a fake Mist only, and the serial login against scripted replies,
-not a real vJunos console); and the setup page, the token checks and the MCP
-server have not run on a real host. Watch the first build, adoption and fabric
-build.
+Read `ADVICE.md` section 6. The important ones: one real host so far, with a
+three-switch IP Clos slice; Tear down and both reverts have not run on real
+gear, nor collapsed-core or ESI-LAG fabric builds; no client traffic has
+crossed a built fabric; the MCP server has not run on a real host; and Tear
+down leaves the switches in the Mist org's inventory. Watch the first of each.
 
 ## License
 
