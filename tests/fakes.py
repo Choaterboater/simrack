@@ -404,6 +404,8 @@ class FakeMist:
         self.reject_status = 400
         #: every read fails the way an unreachable Mist does
         self.fail_reads = False
+        #: top-level fields Mist answers 400 to when a PUT sends them as "" (an ID or an address)
+        self.refuse_empty: set[str] = set()
         self.calls: list[tuple] = []
         self._n = 0
         self._topologies_made = 0
@@ -487,10 +489,19 @@ class FakeMist:
         self._read()
         return dict(self.settings_by_site.get(site_id, {}))
 
+    def _refuse_empty(self, what, body):
+        bad = sorted(k for k in self.refuse_empty if body.get(k) == "")
+        if bad:
+            from simrack.errors import BackendError
+
+            raise BackendError(f"Mist API {what} failed (400).", detail=json.dumps({"detail": f"fake: {bad[0]} may not be empty"}), status=400)
+
     def put_site_setting(self, site_id, setting):
+        """Like a device PUT: the top-level fields sent change and the rest stay."""
         self._guard("put_site_setting")
         self._log("put_site_setting", site_id, setting)
-        self.settings_by_site[site_id] = json.loads(json.dumps(setting))
+        self._refuse_empty(f"PUT /sites/{site_id}/setting", setting)
+        self.settings_by_site.setdefault(site_id, {}).update(json.loads(json.dumps(setting)))
 
     def evpn_topologies(self, site_id):
         """Like Mist, the list has no ``switches`` or ``switch_configs``; get one topology for those."""
@@ -573,9 +584,11 @@ class FakeMist:
         return [dict(r) for r in self.stats_by_site.get(site_id, [])]
 
     def put_device(self, site_id, device_id, config):
+        """As on a real switch (Oct 2026): the top-level fields sent change, each one whole, and the rest stay."""
         self._guard("put_device")
         self._log("put_device", site_id, device_id, sorted(config)[:5])
-        self.device_config[(site_id, device_id)] = json.loads(json.dumps(config))
+        self._refuse_empty(f"PUT /sites/{site_id}/devices/{device_id}", config)
+        self.device_config.setdefault((site_id, device_id), {}).update(json.loads(json.dumps(config)))
 
     #: What GET /orgs/{org}/ocdevices/outbound_ssh_cmd returns: set lines in ``cmd``.
     ADOPT_CMD = (

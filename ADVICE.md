@@ -211,7 +211,8 @@ border router means the border path is broken, not Mist.
   an imported shape, on vJunos-switch 26.2R1.7 and a Mist cloud org. Build
   from shape, Adopt, Build fabric in Mist, Check cabling and Health ran there:
   every switch committed Mist's config, and underlay and EVPN overlay BGP came
-  up. Tear down, Revert Mist and Revert Proxmox have not run on real gear.
+  up. Revert Mist ran there once (a port description, Oct 2026) and the Junos
+  came back clean. Tear down and Revert Proxmox have not run on real gear.
 - The setup page and its token commands worked on that host; the MCP server has
   not run on a real host. Still check that the page lists your live lab as
   protected before the first build.
@@ -246,6 +247,13 @@ border router means the border path is broken, not Mist.
 - Revert Mist puts each topology back exactly as Mist returned it. Whether Mist
   accepts its own computed fields back is unverified; if it refuses, revert
   sends members and roles, as the fabric build does, and says so in the notes.
+- Mist's PUT keeps any top-level field it is not sent (seen on a switch; the
+  site setting is assumed to work the same way). The first real revert left nine
+  fields the Mist page had added on save, all empty. Revert now sends a setting
+  made since as `{}`, `[]` or `""`, after a 400 sends it again without the `""`
+  ones, then as the snapshot alone. It leaves a yes/no or a number and names it
+  in the notes, and never empties the root password or whether Mist manages a
+  switch. Clearing a non-empty one has not run on real gear.
 - Check cabling assumes net1 is ge-0/0/0. LLDP confirmed it on vJunos-switch
   26.2R1.7; another image may map differently. When LLDP disagrees on a cable
   that Proxmox has right, it says so; that mapping is the first thing to check.

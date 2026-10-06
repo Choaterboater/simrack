@@ -99,6 +99,37 @@ def _with_root_password(config: dict, password: str) -> dict:
     return {**config, "switch_mgmt": {**(config.get("switch_mgmt") or {}), "root_password": password}}
 
 
+#: What and where a switch or site is, and whether Mist manages it. Mist sets these itself, and
+#: a switch Mist stopped managing would never get the revert, so revert never empties one.
+_NOT_SETTINGS = frozenset({
+    "id", "name", "mac", "serial", "model", "type", "site_id", "org_id", "created_time", "modified_time",
+    "map_id", "x", "y", "height", "orientation", "hw_rev", "tag_id", "tag_uuid", "bundled_mac",
+    "image1_url", "image2_url", "image3_url", "deviceprofile_id", "evpntopo_id", "for_site",
+    "adopted", "managed", "mist_configured", "disable_auto_config",
+})
+
+
+def _emptied(saved: dict, live: dict) -> tuple[dict, list[str]]:
+    """Each setting Mist has now that ``saved`` lacked, as its empty value; and those with none.
+
+    Mist's PUT keeps every top-level field it is not sent, so a setting made since
+    the snapshot survives a revert unless it goes out empty. A yes/no or a number
+    has no empty value, and a guess could switch something on, so it is only named."""
+    empty, kept = {}, []
+    for key, value in sorted(live.items()):
+        if key in saved or key in _NOT_SETTINGS or value is None or value in ({}, [], ""):
+            continue
+        if isinstance(value, (dict, list, str)):
+            empty[key] = type(value)()
+        else:
+            kept.append(key)
+    return empty, kept
+
+
+def _fields(by_place: dict) -> str:
+    return "; ".join(f"{place} {', '.join(keys)}" for place, keys in by_place.items())
+
+
 def _cli_without_secrets(reply: object) -> dict:
     """Mist's generated config for a switch, minus every line that holds a secret."""
     lines = reply.get("cli") if isinstance(reply, dict) else None
@@ -1247,7 +1278,9 @@ class SandboxManager:
         return {"label": label, "taken_at": snapshot.taken_at, "site_id": site_id, "devices": len(snapshot.devices), "path": path}
 
     def mist_revert(self, sandbox: Sandbox, label: str) -> dict:
-        """Put Mist back the way the snapshot found it."""
+        """Put Mist back the way the snapshot found it.
+
+        A setting made since goes back empty, since Mist keeps any it is not sent."""
         self.access.check_lab()
         self.access.check_mist()
         record = sandbox.mist_snapshots.get(label)
@@ -1262,6 +1295,18 @@ class SandboxManager:
         self.guard.check_site(site_id)
         removed = data.get("root_password_removed") or {}
         password = self._root_password(sandbox) if removed.get("site_setting") or removed.get("devices") else ""
+        names = {d.get("id"): d.get("name") for d in self.mist.devices(site_id, "switch")}
+        emptied, kept = {}, {}
+
+        def root() -> str:
+            return password or self._root_password(sandbox)
+
+        def put_back(place: str, put: Callable[[dict], None], saved: dict, live: dict) -> None:
+            done, left = self._put_back(put, saved, live, root)
+            if done:
+                emptied[place] = done
+            if left:
+                kept[place] = left
 
         # A topology the snapshot did not have goes first, before the networks it carries.
         saved_ids = {t.get("id") for t in data["evpn_topologies"]}
@@ -1273,9 +1318,9 @@ class SandboxManager:
             else:
                 live_ids.add(topology.get("id"))
 
-        # PUT is a replace for these objects, so the site setting goes back whole.
+        # Each field sent goes back whole; one the snapshot lacked goes back empty.
         setting = _with_root_password(data["site_setting"], password) if removed.get("site_setting") else data["site_setting"]
-        self.mist.put_site_setting(site_id, setting)
+        put_back("site", lambda body: self.mist.put_site_setting(site_id, body), setting, self.mist.site_setting(site_id))
         for topology in data["evpn_topologies"]:
             # One deleted since the snapshot is made again: a PUT to its old id would be a 404.
             body = topology if topology.get("id") in live_ids else {k: v for k, v in topology.items() if k != "id"}
@@ -1291,8 +1336,18 @@ class SandboxManager:
         for device_id, config in data["devices"].items():
             if device_id in (removed.get("devices") or []):
                 config = _with_root_password(config, password)
-            self.mist.put_device(site_id, device_id, config)
-        sandbox.notes.append(f"Mist reverted to {label}" + (f"; removed topology {', '.join(topologies_removed)}" if topologies_removed else ""))
+            put_back(
+                names.get(device_id) or config.get("name") or device_id,
+                lambda body, device_id=device_id: self.mist.put_device(site_id, device_id, body),
+                config,
+                self.mist.device(site_id, device_id),
+            )
+        note = f"Mist reverted to {label}" + (f"; removed topology {', '.join(topologies_removed)}" if topologies_removed else "")
+        if emptied:
+            note += f"; emptied {_plural(sum(map(len, emptied.values())), 'setting')} made since ({_fields(emptied)})"
+        if kept:
+            note += f"; kept {_fields(kept)}, which have no empty value Mist takes: change them in Mist by hand"
+        sandbox.notes.append(note)
         self._save(sandbox)
         return {
             "label": label,
@@ -1301,7 +1356,33 @@ class SandboxManager:
             "topologies_restored": len(data["evpn_topologies"]),
             "topologies_removed": topologies_removed,
             "devices_restored": len(data["devices"]),
+            "fields_cleared": emptied,
+            "fields_kept": kept,
         }
+
+    def _put_back(self, put: Callable[[dict], None], saved: dict, live: dict, root: Callable[[], str]) -> tuple[list[str], list[str]]:
+        """PUT ``saved`` with each setting made since sent empty; returns which went empty and which stayed.
+
+        Mist answers 400 to some fields sent as "" (an ID or an address), so after a
+        400 it goes again without the words, then as the snapshot alone."""
+        empty, kept = _emptied(saved, live)
+        mgmt = live.get("switch_mgmt") if isinstance(live.get("switch_mgmt"), dict) else {}
+        if "switch_mgmt" in empty and mgmt.get("root_password"):
+            # The switches' root password stays in Mist whatever else goes.
+            if set(mgmt) - {"root_password"}:
+                empty["switch_mgmt"] = {"root_password": root()}
+            else:
+                del empty["switch_mgmt"]
+        tries = [empty, {k: v for k, v in empty.items() if not isinstance(v, str)}, {}]
+        tries = [extra for index, extra in enumerate(tries) if extra not in tries[:index]]
+        for extra in tries:
+            try:
+                put({**saved, **extra})
+                break
+            except BackendError as error:
+                if error.status != 400 or extra is tries[-1]:
+                    raise
+        return sorted(extra), sorted(kept + [key for key in empty if key not in extra])
 
     def _require_site(self, sandbox: Sandbox) -> str:
         if not sandbox.mist_site_id:
