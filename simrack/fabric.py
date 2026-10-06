@@ -12,6 +12,7 @@ import copy
 import ipaddress
 import re
 
+from .config import SWITCH_PORTS
 from .shapes import _expand, _natural
 
 MIST_ROLES = ("access", "border", "collapsed-core", "core", "distribution", "esilag-access")
@@ -24,6 +25,11 @@ ESILAG_PEERS = ("collapsed-core", "distribution")
 ROUTED_AT = ("core", "distribution", "edge")
 #: Which roles carry the anycast gateways, by ``routed_at``.
 GATEWAY_ROLES = {"edge": ("access",), "core": ("core", "collapsed-core"), "distribution": ("distribution", "collapsed-core")}
+#: Roles that hold the networks wherever the fabric routes: the border and the
+#: switches clients plug into. The gateway roles hold them too.
+NETWORK_ROLES = ("border", "access", "esilag-access")
+#: The site port usage that carries every recipe network (see ``topology_body``).
+NETWORK_USAGE = "clients"
 
 SAFE_UNDERLAY = "10.255.224.0/20"
 SAFE_ROUTER_IDS = "172.31.0.0/23"
@@ -186,12 +192,13 @@ def not_a_link(role_a: str, role_b: str) -> str:
     return f"not a fabric link ({role_a} to {role_b})"
 
 
-def topology_body(sandbox, macs: dict, pods=None, protected=()) -> tuple[dict, dict]:
+def topology_body(sandbox, macs: dict, pods=None, protected=(), switch_ports: int = SWITCH_PORTS) -> tuple[dict, dict]:
     """The detailed ``PUT /sites/{id}/evpn_topologies`` body for the sandbox's cables.
 
     ``macs`` maps node name to the switch's Mist MAC; a switch without one is
-    not in the site yet. Returns ``(body, info)`` where ``info`` lists the
-    members, what was left out and why, and any notes.
+    not in the site yet. ``switch_ports`` is how many ge-0/0/N ports each switch
+    has. Returns ``(body, info)`` where ``info`` lists the members, what was
+    left out and why, and any notes.
     """
     recipe = sandbox.recipe
     notes: list[str] = []
@@ -246,6 +253,16 @@ def topology_body(sandbox, macs: dict, pods=None, protected=()) -> tuple[dict, d
     pod_of, pod_names = _pods([n for n in switch_nodes if n.name in role and role[n.name] in POD_ROLES], pods)
     gateways = _gateways(recipe)
     gateway_roles = GATEWAY_ROLES[routed_at]
+    # Mist builds a switch's EVPN instance, VLANs and gateways only for the networks
+    # one of its ports uses. A VTEP with none gets its default VLAN's VNI in the main
+    # instance and Junos refuses the commit, so each switch that holds the networks
+    # gets its last free port as a trunk of all of them.
+    holds_networks = (set(NETWORK_ROLES) | set(gateway_roles)) if recipe.networks else set()
+    cabled: dict[str, set] = {name: set() for name in members}
+    for link in sandbox.links:
+        for node, port in ((link.a_node, link.a_port), (link.b_node, link.b_port)):
+            if node in cabled:
+                cabled[node].add(port)
 
     switches = []
     configs = {}
@@ -258,6 +275,12 @@ def topology_body(sandbox, macs: dict, pods=None, protected=()) -> tuple[dict, d
         port_config = {
             ",".join(sorted(set(used), key=_natural)): {"usage": usage} for usage, used in ports[name].items() if used
         }
+        if role[name] in holds_networks:
+            free = next((f"ge-0/0/{n}" for n in range(switch_ports - 1, -1, -1) if f"ge-0/0/{n}" not in cabled[name]), None)
+            if free:
+                port_config[free] = {"usage": NETWORK_USAGE}
+            else:
+                notes.append(f"{name} has no free port to carry the networks, so Mist will not build its EVPN instance.")
         if port_config:
             conf["port_config"] = port_config
         if gateways and role[name] in gateway_roles:
@@ -351,7 +374,8 @@ def merge_switch_config(current: dict, conf: dict) -> dict:
 
 
 def site_setting(current: dict, recipe, password: str) -> dict:
-    """The site setting with the recipe's networks, VRF and root password, everything else kept."""
+    """The site setting with the recipe's networks, VRF, the port usage that
+    carries the networks and the root password, everything else kept."""
     merged = copy.deepcopy(current or {})
     wanted = recipe.mist_setting()
     networks = merged.get("networks") if isinstance(merged.get("networks"), dict) else {}
@@ -372,6 +396,13 @@ def site_setting(current: dict, recipe, password: str) -> dict:
             entry.setdefault("extra_routes", {})
             instances[vrf] = entry
         merged["vrf_instances"] = instances
+    if wanted["networks"]:
+        usages = dict(merged["port_usages"]) if isinstance(merged.get("port_usages"), dict) else {}
+        entry = dict(usages[NETWORK_USAGE]) if isinstance(usages.get(NETWORK_USAGE), dict) else {}
+        entry.pop("port_network", None)
+        entry.update({"mode": "trunk", "all_networks": False, "networks": list(wanted["networks"]), "stp_edge": True})
+        usages[NETWORK_USAGE] = entry
+        merged["port_usages"] = usages
     mgmt = dict(merged.get("switch_mgmt") or {}) if isinstance(merged.get("switch_mgmt"), dict) else {}
     mgmt["root_password"] = password
     merged["switch_mgmt"] = mgmt

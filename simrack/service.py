@@ -1089,7 +1089,13 @@ class SandboxManager:
             )
 
         macs = {name: mac for name, (_, mac) in found.items()}
-        body, info = fabric.topology_body(sandbox, macs, pods=self._shape_pods(sandbox), protected=self.settings.production_subnets)
+        body, info = fabric.topology_body(
+            sandbox,
+            macs,
+            pods=self._shape_pods(sandbox),
+            protected=self.settings.production_subnets,
+            switch_ports=self.settings.switch_ports,
+        )
         options = body["evpn_options"]
         self.guard.check_subnets(
             {

@@ -37,6 +37,7 @@ from tests.test_case9_shapes import bundle
 PARKED = "bridge=sbxpark,firewall=0,link_down=1"
 UP = "evpn_uplink"
 DOWN = "evpn_downlink"
+CLIENTS = "clients"
 
 
 def pure(nodes, cables, **recipe):
@@ -105,9 +106,9 @@ class TestFabricBody(unittest.TestCase):
         self.macs = macs_of(self.sandbox)
         self.pods = [{"id": "1", "name": "Pod 1"}]
 
-    def body(self, sandbox=None, macs=None, pods=None):
+    def body(self, sandbox=None, macs=None, pods=None, **options):
         sandbox = sandbox or self.sandbox
-        return fabric.topology_body(sandbox, macs if macs is not None else macs_of(sandbox), pods=pods, protected=LIVE_SUBNETS)
+        return fabric.topology_body(sandbox, macs if macs is not None else macs_of(sandbox), pods=pods, protected=LIVE_SUBNETS, **options)
 
     def test_links_and_fabric_ports_match_the_live_fabric(self):
         body, info = self.body(pods=self.pods)
@@ -138,9 +139,49 @@ class TestFabricBody(unittest.TestCase):
         )
         self.assertEqual(body["pod_names"], {"1": "Pod 1"})
         ports = {mac: conf.get("port_config") for mac, conf in body["switch_configs"].items()}
-        self.assertEqual(ports[m["sbx-bl-02"]], {"ge-0/0/0,ge-0/0/1": {"usage": DOWN}})
+        self.assertEqual(ports[m["sbx-bl-02"]], {"ge-0/0/0,ge-0/0/1": {"usage": DOWN}, "ge-0/0/9": {"usage": CLIENTS}})
         self.assertEqual(ports[m["sbx-core-02"]], {"ge-0/0/0,ge-0/0/1": {"usage": UP}, "ge-0/0/2,ge-0/0/3": {"usage": DOWN}})
-        self.assertEqual(ports[m["sbx-acc-01"]], {"ge-0/0/0,ge-0/0/1": {"usage": UP}})
+        self.assertEqual(ports[m["sbx-acc-01"]], {"ge-0/0/0,ge-0/0/1": {"usage": UP}, "ge-0/0/9": {"usage": CLIENTS}})
+
+    def test_the_switches_that_hold_the_networks_get_a_port_that_carries_them(self):
+        # Mist builds a switch's EVPN instance, VLANs and gateways only for the networks
+        # one of its ports uses. Without one, Junos refuses the config Mist sends a VTEP.
+        body, info = self.body()
+        m, configs = self.macs, body["switch_configs"]
+        for name in ("sbx-bl-01", "sbx-bl-02", "sbx-acc-01", "sbx-acc-02"):
+            self.assertEqual(configs[m[name]]["port_config"]["ge-0/0/9"], {"usage": CLIENTS}, name)
+        for name in ("sbx-core-01", "sbx-core-02"):
+            self.assertNotIn({"usage": CLIENTS}, list(configs[m[name]]["port_config"].values()), "a lean spine holds no networks")
+        self.assertEqual(info["notes"], [])
+
+        self.sandbox.recipe.routed_at = "core"
+        configs = self.body(switch_ports=6)[0]["switch_configs"]
+        for name in ("sbx-bl-01", "sbx-core-01", "sbx-core-02", "sbx-acc-02"):
+            self.assertEqual(configs[m[name]]["port_config"]["ge-0/0/5"], {"usage": CLIENTS}, f"{name}, routed at the core")
+
+        self.sandbox.recipe.networks = []
+        configs = self.body()[0]["switch_configs"]
+        used = [usage for conf in configs.values() for usage in conf.get("port_config", {}).values()]
+        self.assertNotIn({"usage": CLIENTS}, used, "no networks, nothing to carry")
+
+    def test_the_network_port_is_the_last_one_no_cable_uses(self):
+        sandbox = pure(
+            [("sbx-core-01", "core"), ("sbx-acc-01", "access"), ("sbx-acc-02", "access"), ("sbx-srx-01", "vsrx", "vsrx")],
+            [
+                ("sbx-core-01", "ge-0/0/0", "sbx-acc-01", "ge-0/0/0"),
+                ("sbx-core-01", "ge-0/0/1", "sbx-acc-02", "ge-0/0/0"),
+                ("sbx-acc-01", "ge-0/0/3", "sbx-srx-01", "ge-0/0/0"),
+                ("sbx-srx-01", "ge-0/0/1", "sbx-acc-02", "ge-0/0/1"),
+                ("sbx-acc-02", "ge-0/0/2", "sbx-srx-01", "ge-0/0/2"),
+                ("sbx-acc-02", "ge-0/0/3", "sbx-srx-01", "ge-0/0/3"),
+            ],
+        )
+        m = macs_of(sandbox)
+        body, info = self.body(sandbox, switch_ports=4)
+        configs = body["switch_configs"]
+        self.assertEqual(configs[m["sbx-acc-01"]]["port_config"], {"ge-0/0/0": {"usage": UP}, "ge-0/0/2": {"usage": CLIENTS}})
+        self.assertEqual(configs[m["sbx-acc-02"]]["port_config"], {"ge-0/0/0": {"usage": UP}})
+        self.assertTrue(any("sbx-acc-02" in n and "no free port" in n for n in info["notes"]), info["notes"])
 
     def test_gateways_sit_on_the_switches_that_route(self):
         body, _ = self.body()
@@ -275,8 +316,9 @@ class TestFabricBody(unittest.TestCase):
         self.assertEqual(switches[m["sbx-esi-01"]]["uplinks"], [])
         self.assertEqual(switches[m["sbx-esi-01"]]["pod"], 1)
         self.assertNotIn("pod", switches[m["sbx-cc-01"]])
-        self.assertNotIn(m["sbx-esi-01"], body["switch_configs"], "ESI-LAG ports are Mist's to name")
-        self.assertNotIn("port_config", body["switch_configs"][m["sbx-cc-01"]])
+        client_port = {"ge-0/0/9": {"usage": CLIENTS}}
+        self.assertEqual(body["switch_configs"][m["sbx-esi-01"]], {"port_config": client_port}, "ESI-LAG ports are Mist's to name")
+        self.assertEqual(body["switch_configs"][m["sbx-cc-01"]]["port_config"], client_port)
         self.assertIn("other_ip_configs", body["switch_configs"][m["sbx-cc-01"]], "a collapsed core routes")
         self.assertTrue(any("sbx-cc-01 ge-0/0/0" in s for s in info["skipped"]))
 
@@ -289,7 +331,7 @@ class TestFabricBody(unittest.TestCase):
         body, _ = self.body(sandbox)
         self.assertEqual(by_mac(body)[m["sbx-core-01"]]["downlinks"], [m["sbx-acc-01"]])
         self.assertEqual(body["switch_configs"][m["sbx-core-01"]]["port_config"], {"ge-0/0/2,ge-0/0/3": {"usage": DOWN}})
-        self.assertEqual(body["switch_configs"][m["sbx-acc-01"]]["port_config"], {"ge-0/0/0,ge-0/0/1": {"usage": UP}})
+        self.assertEqual(body["switch_configs"][m["sbx-acc-01"]]["port_config"], {"ge-0/0/0,ge-0/0/1": {"usage": UP}, "ge-0/0/9": {"usage": CLIENTS}})
 
     def test_pods_follow_the_shape_then_the_name(self):
         sandbox = pure(
@@ -368,6 +410,7 @@ class TestSiteSetting(unittest.TestCase):
         current = {
             "networks": {"data": {"vlan": 99, "vlan_id": 99, "subnet": "10.9.9.0/24", "isolation": True}, "guest": {"vlan_id": 30, "subnet": "10.1.1.0/24"}},
             "vrf_instances": {"LAB": {"networks": {"guest": {}}, "loopback_address": ""}, "OTHER": {"networks": ["x"]}},
+            "port_usages": {"ap": {"mode": "trunk", "all_networks": True}, "clients": {"mode": "access", "port_network": "guest", "poe_disabled": True}},
             "switch_mgmt": {"root_password": "old", "protect_re": {"enabled": True}},
             "rtsa": {"enabled": False},
         }
@@ -379,16 +422,27 @@ class TestSiteSetting(unittest.TestCase):
         self.assertEqual(merged["networks"]["voice"], {"vlan_id": 20, "subnet": "10.60.20.0/24"})
         self.assertEqual(merged["vrf_instances"]["LAB"], {"networks": ["guest", "data", "voice"], "loopback_address": "", "extra_routes": {}})
         self.assertEqual(merged["vrf_instances"]["OTHER"], {"networks": ["x"]})
+        self.assertEqual(merged["port_usages"]["ap"], {"mode": "trunk", "all_networks": True})
+        self.assertEqual(
+            merged["port_usages"]["clients"],
+            {"mode": "trunk", "all_networks": False, "networks": ["data", "voice"], "stp_edge": True, "poe_disabled": True},
+            "a trunk of the recipe's networks, with no native network of its own",
+        )
         self.assertEqual(merged["switch_mgmt"], {"root_password": "pw-1", "protect_re": {"enabled": True}})
         self.assertEqual(merged["rtsa"], {"enabled": False})
 
     def test_an_empty_site_gets_the_recipe_and_the_password(self):
         merged = fabric.site_setting({}, ip_clos_sandbox(), "pw-2")
-        self.assertEqual(set(merged), {"networks", "vrf_instances", "switch_mgmt"})
+        self.assertEqual(set(merged), {"networks", "vrf_instances", "port_usages", "switch_mgmt"})
         self.assertEqual(merged["switch_mgmt"], {"root_password": "pw-2"})
+        self.assertEqual(merged["port_usages"], {"clients": {"mode": "trunk", "all_networks": False, "networks": ["data", "voice"], "stp_edge": True}})
         self.assertNotIn("management", merged["networks"], "management stays out of band on fxp0")
         for network in merged["networks"].values():
             self.assertEqual(overlaps_live(network["subnet"]), [])
+
+        recipe = ip_clos_sandbox()
+        recipe.networks, recipe.vrf = [], None
+        self.assertNotIn("port_usages", fabric.site_setting({}, recipe, "pw-3"), "no networks, nothing to carry")
 
 
 class Built(Base):
@@ -429,6 +483,7 @@ class TestBuildFabric(Built):
         setting = self.mist.site_setting(self.site)
         self.assertEqual(setting["networks"]["data"], {"vlan_id": 10, "subnet": "10.60.10.0/24"})
         self.assertEqual(setting["vrf_instances"]["LAB"]["networks"], ["data", "voice"])
+        self.assertEqual(setting["port_usages"]["clients"]["networks"], ["data", "voice"])
         self.assertEqual(setting["switch_mgmt"]["root_password"], password)
         for name, device_id in self.ids.items():
             device = self.mist.device(self.site, device_id)
@@ -539,8 +594,16 @@ class TestBuildFabric(Built):
         access = self.mist.device(self.site, self.ids["sbx-acc-01"])
         self.assertEqual(set(access["other_ip_configs"]), {"data", "voice"})
         self.assertEqual(access["vrf_config"], {"enabled": True})
+        self.assertEqual(access["port_config"]["ge-0/0/9"], {"usage": CLIENTS}, "without it Mist builds no EVPN instance or gateways")
         self.assertIs(access["mist_configured"], True)
         self.assertNotIn("other_ip_configs", core, "an edge-routed fabric routes at the access switches")
+
+    def test_the_network_port_follows_the_switch_port_count(self):
+        self.manager.settings.switch_ports = 8
+        self.manager.mist_build_fabric(self.sandbox)
+        ports = self.mist.device(self.site, self.ids["sbx-bl-01"])["port_config"]
+        self.assertEqual(ports["ge-0/0/7"], {"usage": CLIENTS})
+        self.assertNotIn("ge-0/0/9", ports)
 
     def test_a_refused_detailed_topology_falls_back_to_basic_plus_switch_ports(self):
         self.mist.reject_topology = "detailed"
@@ -584,7 +647,7 @@ class TestBuildFabric(Built):
         self.assertEqual(switches[macs["sbx-acc-01"]]["uplinks"], [macs["sbx-core-01"]])
         self.assertEqual(switches[macs["sbx-acc-01"]]["pod"], 1)
         self.assertEqual(topology["switch_configs"][macs["sbx-core-01"]]["port_config"], {"ge-0/0/2": {"usage": DOWN}})
-        self.assertEqual(topology["switch_configs"][macs["sbx-acc-01"]]["port_config"], {"ge-0/0/2": {"usage": UP}})
+        self.assertEqual(topology["switch_configs"][macs["sbx-acc-01"]]["port_config"], {"ge-0/0/2": {"usage": UP}, "ge-0/0/9": {"usage": CLIENTS}})
         for cidr in (topology["evpn_options"]["underlay"]["subnet"], topology["evpn_options"]["auto_router_id_subnet"]):
             self.assertEqual(overlaps_live(cidr), [])
         self.assertEqual(len(ids), 2)
