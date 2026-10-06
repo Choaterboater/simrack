@@ -253,7 +253,18 @@ border router means the border path is broken, not Mist.
   made since as `{}`, `[]` or `""`, after a 400 sends it again without the `""`
   ones, then as the snapshot alone. It leaves a yes/no or a number and names it
   in the notes, and never empties the root password or whether Mist manages a
-  switch. Clearing a non-empty one has not run on real gear.
+  switch. On real gear (Oct 6, 2026) it emptied a switch's notes and CLI lines
+  and the site's vars in Mist.
+- Mist never takes an Additional CLI line back off a switch when it stops
+  sending one, from the site or the switch (Mist's own docs; on Oct 6, 2026 the
+  revert's push changed nothing on the switch, and the line stayed). Revert Mist
+  names each such line in its notes and in `cli_left_on_switch`, counting a line
+  with a secret rather than showing it. To take one off, send a matching delete
+  line through Mist, wait for the switch to show it committed, then remove the
+  delete line; or Revert guests to a Proxmox point from before it. Revert does
+  not write delete lines itself: turning a set line into its delete is untested
+  for lines that end in a value, and one line Junos refuses fails that switch's
+  whole commit.
 - Check cabling assumes net1 is ge-0/0/0. LLDP confirmed it on vJunos-switch
   26.2R1.7; another image may map differently. When LLDP disagrees on a cable
   that Proxmox has right, it says so; that mapping is the first thing to check.

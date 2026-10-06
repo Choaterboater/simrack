@@ -951,7 +951,7 @@ function shell(s) {
       </form>
       <form class="fields inline" data-form="mist-revert" style="margin-top:.5rem">
         <label class="f">Saved points<select name="label" class="mono" data-mist-snaps></select></label>
-        <button type="submit" data-write data-mist-write data-ask="revert" data-ask-danger data-ask-why="The Mist site goes back to the saved point. What changed in Mist since is lost.">Revert Mist</button>
+        <button type="submit" data-write data-mist-write data-ask="revert" data-ask-danger data-ask-why="The Mist site goes back to the saved point. What changed in Mist since is lost. A CLI line Mist pushed since stays on the switch; the notes name it.">Revert Mist</button>
       </form>
     </section>
 

@@ -361,7 +361,9 @@ TOOLS = (
     _sandbox_tool(
         "revert_mist",
         "Revert Mist",
-        "Puts the sandbox's Mist site back to a saved Mist revert point. What changed in Mist since is lost.",
+        "Puts the sandbox's Mist site back to a saved Mist revert point. What changed in Mist since is lost. "
+        "Mist never takes an Additional CLI line back off a switch, so cli_left_on_switch names each line "
+        "the switches keep: a delete line sent through Mist, or reverting the switches, removes it.",
         "POST",
         "/mist/revert",
         gate="risky-mist",

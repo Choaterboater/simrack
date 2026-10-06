@@ -97,6 +97,34 @@ class TestMistRevert(unittest.TestCase):
         self.assertEqual(result["fields_kept"], {})
         self.assertIn("emptied 4 settings made since", self.sandbox.notes[-1])
 
+    def test_a_cli_line_mist_stops_sending_is_named_as_still_on_the_switch(self):
+        """Mist never takes a CLI line back off the switch (its docs; a real switch, Oct 2026)."""
+        self.mist.put_device(self.site, self.device, {"additional_config_cmds": ["set system location building lab"]})
+        self.manager.mist_snapshot(self.sandbox, "good")
+        self.mist.put_device(self.site, self.device, {"additional_config_cmds": [
+            "set system location building lab", "set system location floor 2", "set snmp community s3cret",
+        ]})
+        self.mist.put_site_setting(self.site, {"additional_config_cmds": ["set system ntp server 10.0.0.1"]})
+
+        result = self.manager.mist_revert(self.sandbox, "good")
+        self.assertEqual(self.mist.device(self.site, self.device)["additional_config_cmds"], ["set system location building lab"])
+        self.assertEqual(self.mist.site_setting(self.site)["additional_config_cmds"], [])
+        self.assertEqual(result["cli_left_on_switch"], {
+            "site": ["set system ntp server 10.0.0.1"],
+            "sbx-acc-01": ["set system location floor 2", "(1 line with a secret, not shown)"],
+        })
+        note = self.sandbox.notes[-1]
+        self.assertIn("sbx-acc-01 set system location floor 2", note)
+        self.assertNotIn("s3cret", note)
+        self.assertIn("Revert guests", note)
+
+    def test_no_cli_line_is_named_when_none_was_dropped(self):
+        self.manager.mist_snapshot(self.sandbox, "good")
+        self.mist.put_device(self.site, self.device, {"notes": "rogue"})
+        result = self.manager.mist_revert(self.sandbox, "good")
+        self.assertEqual(result["cli_left_on_switch"], {})
+        self.assertNotIn("CLI", self.sandbox.notes[-1])
+
     def test_a_yes_no_setting_made_since_stays_and_is_named(self):
         """No yes/no is empty: a guess could switch something on, so it stays and the notes say so."""
         self.manager.mist_snapshot(self.sandbox, "good")

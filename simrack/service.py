@@ -130,6 +130,19 @@ def _fields(by_place: dict) -> str:
     return "; ".join(f"{place} {', '.join(keys)}" for place, keys in by_place.items())
 
 
+def _cli_left(saved: dict, live: dict) -> list[str]:
+    """Each Additional CLI line Mist sends now that ``saved`` lacked; a switch keeps what it did.
+
+    Mist never takes a CLI line back off a switch when it stops sending it (Mist's docs,
+    and a real switch in Oct 2026); only a delete line sent through Mist does. A line
+    that holds a secret is counted, never shown."""
+    had = saved.get("additional_config_cmds") or []
+    left = [line for line in live.get("additional_config_cmds") or [] if isinstance(line, str) and line.strip() and line not in had]
+    shown = [line for line in left if not _SECRET_CLI.search(line)]
+    hidden = len(left) - len(shown)
+    return shown + ([f"({_plural(hidden, 'line')} with a secret, not shown)"] if hidden else [])
+
+
 def _cli_without_secrets(reply: object) -> dict:
     """Mist's generated config for a switch, minus every line that holds a secret."""
     lines = reply.get("cli") if isinstance(reply, dict) else None
@@ -1280,7 +1293,8 @@ class SandboxManager:
     def mist_revert(self, sandbox: Sandbox, label: str) -> dict:
         """Put Mist back the way the snapshot found it.
 
-        A setting made since goes back empty, since Mist keeps any it is not sent."""
+        A setting made since goes back empty, since Mist keeps any it is not sent. A CLI
+        line Mist stops sending stays on the switch, so the notes name it."""
         self.access.check_lab()
         self.access.check_mist()
         record = sandbox.mist_snapshots.get(label)
@@ -1296,12 +1310,15 @@ class SandboxManager:
         removed = data.get("root_password_removed") or {}
         password = self._root_password(sandbox) if removed.get("site_setting") or removed.get("devices") else ""
         names = {d.get("id"): d.get("name") for d in self.mist.devices(site_id, "switch")}
-        emptied, kept = {}, {}
+        emptied, kept, cli_left = {}, {}, {}
 
         def root() -> str:
             return password or self._root_password(sandbox)
 
         def put_back(place: str, put: Callable[[dict], None], saved: dict, live: dict) -> None:
+            on_switch = _cli_left(saved, live)
+            if on_switch:
+                cli_left[place] = on_switch
             done, left = self._put_back(put, saved, live, root)
             if done:
                 emptied[place] = done
@@ -1347,6 +1364,11 @@ class SandboxManager:
             note += f"; emptied {_plural(sum(map(len, emptied.values())), 'setting')} made since ({_fields(emptied)})"
         if kept:
             note += f"; kept {_fields(kept)}, which have no empty value Mist takes: change them in Mist by hand"
+        if cli_left:
+            note += (
+                f"; Mist never takes back a CLI line, so switches keep what these did ({_fields(cli_left)}): "
+                "send a delete line for each through Mist and remove it once pushed, or Revert guests to a Proxmox point from before them"
+            )
         sandbox.notes.append(note)
         self._save(sandbox)
         return {
@@ -1358,6 +1380,7 @@ class SandboxManager:
             "devices_restored": len(data["devices"]),
             "fields_cleared": emptied,
             "fields_kept": kept,
+            "cli_left_on_switch": cli_left,
         }
 
     def _put_back(self, put: Callable[[dict], None], saved: dict, live: dict, root: Callable[[], str]) -> tuple[list[str], list[str]]:
