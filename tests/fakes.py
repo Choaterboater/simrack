@@ -397,6 +397,8 @@ class FakeMist:
         self.cli: dict[tuple[str, str], dict] = {}
         #: site -> rows from GET /sites/{id}/stats/ports/search (LLDP neighbours per port)
         self.ports_by_site: dict[str, list[dict]] = {}
+        #: site -> rows from GET /sites/{id}/stats/devices (status, config_status, version, ...)
+        self.stats_by_site: dict[str, list[dict]] = {}
         #: "detailed" refuses a topology with links or switch_configs, "all" refuses any
         self.reject_topology: str | None = None
         self.reject_status = 400
@@ -565,6 +567,10 @@ class FakeMist:
     def port_stats(self, site_id, mac=None, limit=1000):
         self._read()
         return [dict(r) for r in self.ports_by_site.get(site_id, []) if mac is None or r.get("mac") == mac]
+
+    def device_stats(self, site_id, device_type="switch"):
+        self._read()
+        return [dict(r) for r in self.stats_by_site.get(site_id, [])]
 
     def put_device(self, site_id, device_id, config):
         self._guard("put_device")

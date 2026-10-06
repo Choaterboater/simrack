@@ -1165,34 +1165,37 @@ class SandboxManager:
                     body["switches"].append({"mac": mac, "role": "none"})
                     members.add(mac)
         try:
-            stored = self.mist.put_evpn_topology(site_id, body)
-            return (stored or {}).get("id") or body.get("id"), "detailed"
+            stored, form = self.mist.put_evpn_topology(site_id, body), "detailed"
         except BackendError as error:
             if error.status != 400:
                 raise
             refused = error
-        try:
-            stored = self.mist.put_evpn_topology(site_id, fabric.basic_body(body))
-        except BackendError as error:
-            raise BackendError(
-                "Mist refused the fabric topology.",
-                detail=f"It refused the detailed form ({refused.detail or refused.status}) "
-                f"and the basic one ({error.detail or error.status}).",
-                status=error.status,
-            ) from error
+            try:
+                stored, form = self.mist.put_evpn_topology(site_id, fabric.basic_body(body)), "basic"
+            except BackendError as error:
+                raise BackendError(
+                    "Mist refused the fabric topology.",
+                    detail=f"It refused the detailed form ({refused.detail or refused.status}) "
+                    f"and the basic one ({error.detail or error.status}).",
+                    status=error.status,
+                ) from error
+            notes.append(
+                "Mist refused the detailed topology, so it got the basic one (members and roles) "
+                "and each switch got its fabric ports, gateways and VRF directly."
+            )
+        # Mist answers 200 to the detailed form but keeps switch_configs as plain data:
+        # fabric ports, gateways and VRF only take effect on each device.
         for device_id, mac in found.values():
             conf = body["switch_configs"].get(mac)
             if not conf:
                 continue
-            merged = fabric.merge_switch_config(self.mist.device(site_id, device_id), conf)
+            current = self.mist.device(site_id, device_id)
+            merged = fabric.merge_switch_config(current, conf)
             merged.update(managed=True, mist_configured=True)
-            self.mist.put_device(site_id, device_id, merged)
-            changed.add(device_id)
-        notes.append(
-            "Mist refused the detailed topology, so it got the basic one (members and roles) "
-            "and each switch got its fabric ports, gateways and VRF directly."
-        )
-        return (stored or {}).get("id") or body.get("id"), "basic"
+            if merged != current:
+                self.mist.put_device(site_id, device_id, merged)
+                changed.add(device_id)
+        return (stored or {}).get("id") or body.get("id"), form
 
     def mist_snapshot(self, sandbox: Sandbox, label: str) -> dict:
         """The Mist half of the revert button: site, topology and every device.
@@ -1307,19 +1310,18 @@ class SandboxManager:
     def mist_health(self, sandbox: Sandbox) -> dict:
         """Read-only: are the sandbox switches up, committed and reachable?"""
         site_id = self._require_site(sandbox)
+        # The device list is configuration only; how each switch is doing lives in its stats.
+        stats = {row.get("id"): row for row in self.mist.device_stats(site_id, "switch")}
         devices = []
         for device in self.mist.devices(site_id, "switch"):
-            full = self.mist.device(site_id, device["id"])
+            row = stats.get(device["id"])
             devices.append(
                 {
                     "id": device["id"],
                     "name": device.get("name"),
                     "serial": device.get("serial"),
-                    "connected": device.get("connected"),
-                    "config_status": full.get("config_status"),
-                    "last_seen": full.get("last_seen"),
-                    "version": full.get("version"),
-                    "is_led_on": full.get("is_led_on"),
+                    "connected": row.get("status") == "connected" if row else None,
+                    **{k: (row or {}).get(k) for k in ("config_status", "last_seen", "version", "uptime", "ip")},
                 }
             )
         return {

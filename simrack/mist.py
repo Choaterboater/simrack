@@ -124,6 +124,12 @@ class MistClient:
     def device(self, site_id: str, device_id: str) -> dict:
         return self._request("GET", f"/sites/{site_id}/devices/{device_id}") or {}
 
+    def device_stats(self, site_id: str, device_type: str = "switch") -> list[dict]:
+        """What each device is doing: status, config_status, version, last_seen, uptime, ip."""
+        query = urllib.parse.urlencode({"type": device_type})
+        reply = self._request("GET", f"/sites/{site_id}/stats/devices?{query}") or []
+        return list(reply.get("results") or []) if isinstance(reply, dict) else list(reply)
+
     def device_cli(self, site_id: str, device_id: str) -> dict:
         return self._request("GET", f"/sites/{site_id}/devices/{device_id}/config_cmd") or {}
 

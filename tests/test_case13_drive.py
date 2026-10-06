@@ -423,7 +423,7 @@ class TestBuildFabric(Built):
     def test_the_site_then_the_switches_then_the_topology(self):
         result = self.manager.mist_build_fabric(self.sandbox)
         order = [c[0] for c in self.writes()]
-        self.assertEqual(order, ["put_site_setting"] + ["put_device"] * 6 + ["put_evpn_topology"])
+        self.assertEqual(order, ["put_site_setting"] + ["put_device"] * 6 + ["put_evpn_topology"] + ["put_device"] * 6)
 
         password = self.manager.reveal_root_password(self.sandbox)["root_password"]
         setting = self.mist.site_setting(self.site)
@@ -528,6 +528,19 @@ class TestBuildFabric(Built):
         self.assertIn("no Mist site", str(caught.exception))
         self.sandbox.mist_site_id = site
         self.assertEqual(self.writes(), [])
+
+    def test_an_accepted_detailed_topology_still_puts_each_switch_config_on_the_switch(self):
+        # Real Mist answers 200 to the detailed form but keeps switch_configs as plain
+        # data; gateways, VRF and fabric ports only take effect on the device itself.
+        result = self.manager.mist_build_fabric(self.sandbox)
+        self.assertEqual(result["form"], "detailed")
+        core = self.mist.device(self.site, self.ids["sbx-core-01"])
+        self.assertEqual(core["port_config"], {"ge-0/0/0,ge-0/0/1": {"usage": UP}, "ge-0/0/2,ge-0/0/3": {"usage": DOWN}})
+        access = self.mist.device(self.site, self.ids["sbx-acc-01"])
+        self.assertEqual(set(access["other_ip_configs"]), {"data", "voice"})
+        self.assertEqual(access["vrf_config"], {"enabled": True})
+        self.assertIs(access["mist_configured"], True)
+        self.assertNotIn("other_ip_configs", core, "an edge-routed fabric routes at the access switches")
 
     def test_a_refused_detailed_topology_falls_back_to_basic_plus_switch_ports(self):
         self.mist.reject_topology = "detailed"
@@ -839,6 +852,11 @@ class TestDriveMistClient(unittest.TestCase):
             ],
         )
 
+    def test_switch_stats_come_from_the_stats_endpoint(self):
+        client = self.client()
+        self.assertEqual(client.device_stats("s1"), [{"port_id": "ge-0/0/0"}])
+        self.assertEqual(client.paths, [("GET", "/sites/s1/stats/devices?type=switch")])
+
     def test_a_mist_error_keeps_its_status(self):
         client = MistClient(Settings(mist_token="t", org_id="org-1"), write_gate=lambda: None)
         refused = urllib.error.HTTPError("https://api.mist.com/x", 400, "Bad Request", {}, io.BytesIO(b'{"detail": "invalid switch_configs"}'))
@@ -848,6 +866,24 @@ class TestDriveMistClient(unittest.TestCase):
         self.assertEqual(caught.exception.status, 400)
         self.assertIn("invalid switch_configs", caught.exception.detail)
         self.assertIsNone(BackendError("plain").status)
+
+
+class TestMistHealth(Built):
+    # Mist's device list has no status at all; GET /sites/{id}/stats/devices does.
+    def test_status_comes_from_the_switch_stats(self):
+        self.mist.stats_by_site[self.site] = [
+            {"id": self.ids["sbx-core-01"], "status": "connected", "config_status": "COMMITED", "last_seen": 1790000000.5, "version": "26.2R1.7", "uptime": 900, "ip": "10.11.154.79"},
+            {"id": self.ids["sbx-acc-01"], "status": "disconnected", "config_status": "FAILED", "last_seen": 1789990000, "version": "26.2R1.7"},
+        ]
+        devices = {d["name"]: d for d in self.manager.mist_health(self.sandbox)["devices"]}
+        self.assertEqual(
+            {k: devices["sbx-core-01"][k] for k in ("connected", "config_status", "last_seen", "version", "uptime", "ip")},
+            {"connected": True, "config_status": "COMMITED", "last_seen": 1790000000.5, "version": "26.2R1.7", "uptime": 900, "ip": "10.11.154.79"},
+        )
+        self.assertIs(devices["sbx-acc-01"]["connected"], False)
+        self.assertEqual(devices["sbx-acc-01"]["config_status"], "FAILED")
+        self.assertIsNone(devices["sbx-bl-01"]["connected"], "a switch Mist has no stats for is unknown, not down")
+        self.assertEqual([c[0] for c in self.writes()], [])
 
 
 class TestDriveApi(Built):
