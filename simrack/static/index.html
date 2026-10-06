@@ -64,7 +64,7 @@
     <div class="fit" data-fit></div>
     <label class="check"><input type="checkbox" name="start" checked> Start guests after building</label>
     <label class="check"><input type="checkbox" name="mist"> Create a Mist site for it</label>
-    <div class="actions"><button class="primary" type="submit" data-write data-ask="build" data-busy-label="Building…">Build sandbox</button><button type="button" class="ghost" data-act="cancel-new" data-cancel>Cancel</button></div>
+    <div class="actions"><button class="primary" type="submit" data-write data-busy-label="Building…">Build sandbox</button><button type="button" class="ghost" data-act="cancel-new" data-cancel>Cancel</button></div>
   </form>
 </template>
 
@@ -73,11 +73,9 @@
     <p class="ask-q" id="ask-q"></p>
     <p class="note" id="ask-why"></p>
     <div class="actions ask-choices">
-      <button value="no" autofocus>1 No</button>
-      <button value="once" id="ask-once">2 Yes, this once</button>
-      <button value="session" id="ask-session">3 Yes for this session</button>
+      <button value="no" autofocus>Cancel</button>
+      <button value="yes" id="ask-yes">OK</button>
     </div>
-    <p class="ask-hint" id="ask-hint"></p>
   </form>
 </dialog>
 

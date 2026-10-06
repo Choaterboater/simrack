@@ -271,8 +271,7 @@ dialog.ask::backdrop { background: #0009; }
 dialog.ask form { display: grid; gap: var(--s-3); }
 dialog.ask .ask-q { margin: 0; font-size: var(--t-lg); font-weight: 600; overflow-wrap: anywhere; }
 dialog.ask .note { font-size: var(--t-sm); }
-dialog.ask .ask-choices { margin-top: var(--s-2); }
-dialog.ask .ask-hint { margin: 0; font-size: var(--t-xs); color: var(--faint); }
+dialog.ask .ask-choices { margin-top: var(--s-2); justify-content: flex-end; }
 button[aria-busy="true"]::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor;
          border-right-color: transparent; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

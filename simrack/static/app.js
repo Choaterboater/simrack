@@ -77,32 +77,20 @@ async function run(btn, label, fn, after) {
   }
 }
 
-/* ---------- the yes/no box: every change asks first ----------
-   1 No (also Enter and Esc), 2 Yes this once, 3 Yes for this session. A session yes covers one kind of change
-   (data-ask) until the tab closes; a change that destroys something (data-ask-always) asks every time. */
-const KINDS = { build: "builds", cable: "cable changes", power: "power changes", snapshot: "saved revert points",
-  console: "console commands", mist: "Mist changes", repair: "cabling repairs" };
+/* ---------- the Cancel box: a click that undoes, removes or stops something asks first ----------
+   Saving, adding and starting just happen. A button with data-ask asks every time, and Cancel has the focus,
+   so Enter and Esc cancel. data-ask-danger (or a red button) makes the action red. */
 function ask(btn, label) {
-  const kind = btn.dataset.ask, always = btn.hasAttribute("data-ask-always"), box = $("#ask");
-  if (!always && sessionStorage.getItem("simrack_ok:" + kind)) return Promise.resolve(true);
+  const box = $("#ask"), yes = $("#ask-yes");
   $("#ask-q").textContent = label + "?";
   const why = $("#ask-why"); why.textContent = btn.dataset.askWhy || ""; why.hidden = !why.textContent;
-  $("#ask-once").className = always || btn.classList.contains("danger") ? "danger solid" : "primary";
-  $("#ask-session").hidden = always;
-  $("#ask-hint").textContent = "Enter or Esc means No." + (always ? " This one asks every time." : ` 3 stops asking about ${KINDS[kind] || "these"} until this tab closes.`);
+  yes.textContent = btn.textContent.trim().replace(/…$/, "") || "OK";
+  yes.className = btn.hasAttribute("data-ask-danger") || btn.classList.contains("danger") ? "danger solid" : "primary";
   box.returnValue = "";
   box.showModal();
   $('#ask [value="no"]').focus();
-  return new Promise(done => box.addEventListener("close", () => {
-    if (box.returnValue === "session") sessionStorage.setItem("simrack_ok:" + kind, "1");
-    done(box.returnValue === "once" || box.returnValue === "session");
-  }, { once: true }));
+  return new Promise(done => box.addEventListener("close", () => done(box.returnValue === "yes"), { once: true }));
 }
-$("#ask").addEventListener("keydown", e => {
-  const pick = { 1: "no", 2: "once", 3: "session" }[e.key];
-  if (!pick || (pick === "session" && $("#ask-session").hidden)) return;
-  e.preventDefault(); $("#ask").close(pick);
-});
 async function togglePause(btn) {
   const pause = !S.paused;
   btn.disabled = true;
@@ -152,6 +140,16 @@ function fillSelect(select, html) {
   if (!select || select._html === html || document.activeElement === select) return;
   const v = select.value; select.innerHTML = html; select._html = html;
   if ($$("option", select).some(o => o.value === v && !o.disabled)) select.value = v;
+}
+/* Saved points, newest first. A point saved since the last fill becomes the pick, so Revert never sits on an old one. */
+function fillPoints(select, points) {
+  if (!select || document.activeElement === select) return;
+  points = points || {};
+  const labels = Object.keys(points).reverse().sort((a, b) => String(points[b].taken_at || "").localeCompare(String(points[a].taken_at || "")));
+  const known = select._labels;
+  fillSelect(select, labels.length ? labels.map(l => `<option>${esc(l)}</option>`).join("") : `<option value="">None saved yet</option>`);
+  if (known && labels.length && !known.includes(labels[0])) select.value = labels[0];
+  select._labels = labels;
 }
 
 /* ---------- helpers on state ---------- */
@@ -435,8 +433,9 @@ function connectHtml(page) {
           <input name="mist_token" type="password" autocomplete="off" spellcheck="false" class="mono"></label>
         <p class="note">Make one in Mist under Organization › Settings › API Token. With Super User or Network Admin, SimRack can build Mist sites; with Observer, it only looks. A new cloud needs the token pasted again.</p>
       </fieldset>
+      <p class="note">SimRack keeps tokens in its state folder, readable by its own user only, and sends each only to the address beside it.</p>
       <div class="form-err" data-setup-tokens-msg role="alert" hidden></div>
-      <div class="actions"><button class="primary" type="submit" data-op="save-tokens" data-read data-ask="setup" data-ask-always data-ask-why="SimRack keeps tokens in its state folder, readable by its own user only, and sends each only to the address beside it." data-busy-label="Saving…">Save connection</button><span class="note ok" data-setup-tokens-ok role="status"></span></div>
+      <div class="actions"><button class="primary" type="submit" data-op="save-tokens" data-read data-busy-label="Saving…">Save connection</button><span class="note ok" data-setup-tokens-ok role="status"></span></div>
     </form>`;
 }
 function saveTokens(f, btn) {
@@ -536,9 +535,9 @@ function labHtml(page) {
       </fieldset>
       <div class="form-err" data-setup-msg role="alert" hidden></div>
       <div class="actions">
-        <button class="primary" type="submit" data-op="save-lab" data-read data-ask="setup" data-ask-always data-ask-why="SimRack never touches anything ticked, and builds only in the sandbox ranges." data-busy-label="Saving…">Save lab profile</button>
+        <button class="primary" type="submit" data-op="save-lab" data-read data-busy-label="Saving…">Save lab profile</button>
         <button class="ghost" type="button" data-act="setup-export" data-read${page.done ? "" : ` data-why="Nothing is saved yet"`}>Export</button>
-        <button class="ghost" type="button" data-act="setup-import" data-read data-ask="setup" data-ask-always data-ask-why="The file replaces the saved lab profile.">Import…</button>
+        <button class="ghost" type="button" data-act="setup-import" data-read data-ask="setup" data-ask-danger data-ask-why="The file replaces the saved lab profile.">Import…</button>
         <span class="note ok" data-setup-ok role="status"></span>
       </div>
       <input type="file" accept=".toml,text/plain" data-setup-file hidden>
@@ -791,7 +790,7 @@ function shapeShell(sh) {
           <label class="check"><input type="checkbox" name="mist" disabled> Create a Mist site for it</label>
           <p class="note" data-mist-why hidden></p>
           <div class="form-err" data-build-msg role="alert" hidden></div>
-          <div class="actions"><button class="primary" type="submit" data-write data-ask="build" data-build data-busy-label="Building…">Build</button></div>
+          <div class="actions"><button class="primary" type="submit" data-write data-build data-busy-label="Building…">Build</button></div>
         </form>
       </section>
       <section aria-labelledby="sec-src"><h2 class="sec" id="sec-src">From Mist</h2><div id="srcfacts"></div></section>
@@ -799,7 +798,7 @@ function shapeShell(sh) {
       <div class="forget">
         <p class="note">Deleting forgets SimRack's copy of this plan. Mist is not touched, and you can import it again.</p>
         <div class="form-err" id="shapemsg" role="alert" hidden></div>
-        <button class="danger" data-act="del-shape" data-name="${esc(sh.name)}" data-ask="delete" data-ask-always data-ask-why="Only SimRack's saved copy goes. Nothing in the lab or in Mist changes." data-busy-label="Deleting…">Delete shape</button>
+        <button class="danger" data-act="del-shape" data-name="${esc(sh.name)}" data-ask="delete" data-ask-danger data-ask-why="Only SimRack's saved copy goes. Nothing in the lab or in Mist changes." data-busy-label="Deleting…">Delete shape</button>
       </div>
     </aside>
   </div>`;
@@ -906,7 +905,7 @@ function shell(s) {
             <option value="switch:core">Core switch</option><option value="switch:border">Border switch</option>
             <option value="vsrx:vsrx">vSRX</option><option value="image:client">Test host</option></select></label>
           <label class="f">Boot from<select name="boot" class="mono" data-boot></select></label>
-          <button type="submit" data-write data-ask="build" data-busy-label="Adding…">Add guest</button>
+          <button type="submit" data-write data-busy-label="Adding…">Add guest</button>
         </form>
       </div>
     </section>
@@ -921,7 +920,7 @@ function shell(s) {
             <label class="f">Port<select name="a_port" class="mono" data-port-for="a_node"></select></label></div>
           <div class="fields pair"><label class="f">To<select name="b_node" data-node-sel data-port-target="b_port"></select></label>
             <label class="f">Port<select name="b_port" class="mono" data-port-for="b_node"></select></label></div>
-          <div class="actions"><button type="submit" data-write data-ask="cable" data-busy-label="Plugging in…">Plug in</button></div>
+          <div class="actions"><button type="submit" data-write data-busy-label="Plugging in…">Plug in</button></div>
         </form>
         <p class="note" style="margin-top:.75rem">Each cable is its own MTU 9216 bridge on the Proxmox host. LLDP and LACP pass through.</p>
       </div>
@@ -939,11 +938,11 @@ function shell(s) {
       <p class="subhead">Proxmox, guest disks</p>
       <form class="fields inline" data-form="pve-snap" autocomplete="off">
         <label class="f">Label<input name="label" class="mono" required pattern="[A-Za-z][A-Za-z0-9_\\-]{0,39}"></label>
-        <button type="submit" data-write data-ask="snapshot" data-busy-label="Saving…">Save point</button>
+        <button type="submit" data-write data-busy-label="Saving…">Save point</button>
       </form>
       <form class="fields inline" data-form="pve-revert" style="margin-top:.5rem">
         <label class="f">Saved points<select name="label" class="mono" data-pve-snaps></select></label>
-        <button type="submit" data-write data-ask="revert" data-ask-always data-ask-why="Every guest goes back to the saved point. What changed since is lost.">Revert guests</button>
+        <button type="submit" data-write data-ask="revert" data-ask-danger data-ask-why="Every guest goes back to the saved point. What changed since is lost.">Revert guests</button>
       </form>
       <p class="subhead" style="margin-top:1.75rem">Mist, site and device configs</p>
       <form class="fields inline" data-form="mist-snap" autocomplete="off">
@@ -952,7 +951,7 @@ function shell(s) {
       </form>
       <form class="fields inline" data-form="mist-revert" style="margin-top:.5rem">
         <label class="f">Saved points<select name="label" class="mono" data-mist-snaps></select></label>
-        <button type="submit" data-write data-mist-write data-ask="revert" data-ask-always data-ask-why="The Mist site goes back to the saved point. What changed in Mist since is lost.">Revert Mist</button>
+        <button type="submit" data-write data-mist-write data-ask="revert" data-ask-danger data-ask-why="The Mist site goes back to the saved point. What changed in Mist since is lost.">Revert Mist</button>
       </form>
     </section>
 
@@ -972,7 +971,7 @@ function shell(s) {
     <p class="note" style="margin-bottom:1rem">Stops and deletes every guest, then removes its bridges. If anything cannot be deleted, the sandbox stays listed so you can retry.</p>
     <form class="fields line" data-form="teardown" autocomplete="off">
       <label class="check"><input type="checkbox" name="keep_mist"> Keep its Mist site</label>
-      <button type="submit" class="danger solid" data-write data-ask="teardown" data-ask-always data-busy-label="Tearing down…">Delete sandbox</button>
+      <button type="submit" class="danger solid" data-write data-ask="teardown" data-ask-danger data-busy-label="Tearing down…">Delete sandbox</button>
     </form>
   </section>`;
 }
@@ -1001,7 +1000,7 @@ function updateSandbox(s) {
       <td><span class="chip ${n.running ? "ok" : ""}">${n.running ? "running" : "stopped"}</span>${n.adopted_at ? ` <span class="chip mist" title="Adopted ${esc(when(n.adopted_at))}">in Mist</span>` : ""}</td>
       <td class="right">${n.running
         ? `<button class="sm" data-act="power" data-node="${esc(n.name)}" data-action="shutdown" data-write data-ask="power" data-busy-label="Stopping">Shut down</button>`
-        : `<button class="sm" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-ask="power" data-busy-label="Starting">Start</button>`}</td></tr>`; }).join("")}</tbody></table></div>`
+        : `<button class="sm" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-busy-label="Starting">Start</button>`}</td></tr>`; }).join("")}</tbody></table></div>`
     : `<p class="hint">No guests. Add one below.</p>`);
   swap($("#cables"), s.links.length ? `<ul class="patch scroll-y">${s.links.map(l => { const on = isSel("cable", l.bridge), ok = linkUp(s, l); return `<li class="${on ? "sel" : ""}" data-act="focus-cable" data-id="${esc(l.bridge)}">
       <i class="wire${ok ? "" : " down"}" aria-hidden="true"></i>
@@ -1020,9 +1019,8 @@ function updateSandbox(s) {
     const nodeSel = f.form.elements[f.dataset.portFor];
     fillSelect(f, portOptions(s, nodeSel && nodeSel.value, null));
   }
-  const pve = Object.keys(s.proxmox_snapshots || {}), mist = Object.keys(s.mist_snapshots || {});
-  fillSelect($("[data-pve-snaps]"), pve.length ? pve.map(l => `<option>${esc(l)}</option>`).join("") : `<option value="">None saved yet</option>`);
-  fillSelect($("[data-mist-snaps]"), mist.length ? mist.map(l => `<option>${esc(l)}</option>`).join("") : `<option value="">None saved yet</option>`);
+  fillPoints($("[data-pve-snaps]"), s.proxmox_snapshots);
+  fillPoints($("[data-mist-snaps]"), s.mist_snapshots);
   const stamp = "before-" + new Date().toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
   for (const f of $$('[data-form="pve-snap"] input, [data-form="mist-snap"] input')) if (!f.value && document.activeElement !== f) f.value = stamp;
 
@@ -1036,7 +1034,7 @@ function updateSandbox(s) {
       <p class="note" style="margin-top:.75rem">Build fabric makes the site match the cables, after saving a revert point. Join Mist above walks through it. Results land in Activity.</p>`
     : sws.length ? `<p class="hint">No Mist site yet. Create it in Join Mist above.</p>`
     : `<p class="hint" style="margin-bottom:.75rem">This sandbox has no Mist site. Creating one makes an empty site named after it in your Mist org.</p>
-      <button data-act="mist" data-op="site" data-write data-mist-write data-ask="mist" data-busy-label="Creating…">Create Mist site</button>`);
+      <button data-act="mist" data-op="site" data-write data-mist-write data-busy-label="Creating…">Create Mist site</button>`);
   renderLog();
 }
 
@@ -1047,7 +1045,7 @@ const planned = n => n.kind === "switch" && n.mgmt_ip && !n.adopted_at
 function adoptBtn(s, n, sm) {
   const why = !s.mist_site_id ? "Create the sandbox's Mist site first" : !n.running ? "Start the switch first" : "";
   const cls = sm ? "sm" : !why && !n.adopted_at ? "primary" : "";
-  return `<button${cls ? ` class="${cls}"` : ""}${sm ? ` aria-label="Adopt ${esc(n.name)}${n.adopted_at ? " again" : ""}"` : ""} data-act="adopt" data-node="${esc(n.name)}" data-write data-mist-write data-ask="mist" data-busy-label="Adopting…" data-why="${esc(why)}"
+  return `<button${cls ? ` class="${cls}"` : ""}${sm ? ` aria-label="Adopt ${esc(n.name)}${n.adopted_at ? " again" : ""}"` : ""} data-act="adopt" data-node="${esc(n.name)}" data-write data-mist-write data-busy-label="Adopting…" data-why="${esc(why)}"
     data-tip="Joins ${esc(n.name)} to the sandbox's Mist site over its serial console. Takes about a minute.">${n.adopted_at ? sm ? "Again" : "Adopt again" : sm ? "Adopt" : "Adopt into Mist"}</button>`;
 }
 /* what the build sends, in the words of Mist's Campus Fabric wizard; the defaults are fabric.py's */
@@ -1077,7 +1075,7 @@ function joinSteps(s, sws) {
   let h = `${li(site, !site)}<h3>Mist site</h3>${site
     ? `<p class="hint">${esc(siteName(s))} <span class="mono faint">${esc(s.mist_site_id)}</span></p>`
     : `<p class="hint">Adoption joins switches to a site, so the sandbox needs its own: an empty site named ${esc(siteName(s))} in your Mist org.</p>
-      <div class="actions"><button class="primary" data-act="mist" data-op="site" data-write data-mist-write data-ask="mist" data-busy-label="Creating…">Create Mist site</button></div>`}</li>`;
+      <div class="actions"><button class="primary" data-act="mist" data-op="site" data-write data-mist-write data-busy-label="Creating…">Create Mist site</button></div>`}</li>`;
   h += `${li(all, site && !all)}<h3>Adopt the switches</h3>
     <p class="hint">Adopt logs in over the serial console, sets the root password and enters the site's adoption commands. The switch then calls Mist over fxp0. About a minute each.</p>
     <div class="scroll-y"><table><thead><tr><th>Switch</th><th class="state">State</th><th>Mist</th><th></th></tr></thead><tbody>${sws.map(n => `<tr>
@@ -1394,11 +1392,11 @@ function inspector(s) {
       <h2 tabindex="-1">${esc(n.name)} <span class="chip ${n.running ? "ok" : ""}">${n.running ? "running" : "stopped"}</span></h2>
       <div class="actions">
         ${n.running ? `<button data-act="power" data-node="${esc(n.name)}" data-action="shutdown" data-write data-ask="power" data-busy-label="Shutting down…">Shut down</button>
-          <button data-act="power" data-node="${esc(n.name)}" data-action="stop" data-write data-ask="power" data-ask-always data-ask-why="Like pulling the plug: the guest gets no chance to shut down." data-busy-label="Powering off…">Power off</button>`
-          : `<button class="primary" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-ask="power" data-busy-label="Starting…">Start</button>`}
+          <button data-act="power" data-node="${esc(n.name)}" data-action="stop" data-write data-ask="power" data-ask-danger data-ask-why="Like pulling the plug: the guest gets no chance to shut down." data-busy-label="Powering off…">Power off</button>`
+          : `<button class="primary" data-act="power" data-node="${esc(n.name)}" data-action="start" data-write data-busy-label="Starting…">Start</button>`}
         ${n.kind === "switch" ? adoptBtn(s, n) : ""}
         <button data-act="cable-from" data-node="${esc(n.name)}" data-write>Cable from here</button>
-        <button class="danger" data-act="del-node" data-node="${esc(n.name)}" data-write data-ask="delete" data-ask-always data-ask-why="The guest and its disk are destroyed, and its cables come out." data-busy-label="Deleting…">Delete</button>
+        <button class="danger" data-act="del-node" data-node="${esc(n.name)}" data-write data-ask="delete" data-ask-danger data-ask-why="The guest and its disk are destroyed, and its cables come out." data-busy-label="Deleting…">Delete</button>
       </div>${CLOSE}
     </div>
     <div class="strip-body">
@@ -1414,7 +1412,7 @@ function inspector(s) {
       </dl>
       ${n.kind === "switch" ? `<div class="console"><form class="fields inline" data-form="console" data-node="${esc(n.name)}" autocomplete="off">
           <label class="f">Serial console<input name="command" class="mono" placeholder="show interfaces terse" maxlength="2000"></label>
-          <button type="submit" data-write data-ask="console" data-busy-label="Sending…">Send</button></form>
+          <button type="submit" data-write data-busy-label="Sending…">Send</button></form>
         ${consoleOut[n.name] ? `<pre>${esc(consoleOut[n.name])}</pre>` : `<p class="note" style="margin-top:.5rem">Sends one command to the serial console and shows the reply here.</p>`}</div>` : ""}
     </div>`;
   }
@@ -1435,7 +1433,7 @@ function inspector(s) {
         <label class="f">Move this end<select name="from_node" data-move-from><option value="${esc(l.a_node)}"${from === l.a_node ? " selected" : ""}>${esc(l.a_node)} ${esc(l.a_port)}</option><option value="${esc(l.b_node)}"${from === l.b_node ? " selected" : ""}>${esc(l.b_node)} ${esc(l.b_port)}</option></select></label>
         <label class="f">To guest<select name="to_node" data-port-target="to_port">${moveTargets(s, l, from)}</select></label>
         <label class="f">Port<select name="to_port" class="mono">${portOptions(s, "", null)}</select></label>
-        <button type="submit" data-write data-ask="cable" data-busy-label="Moving…">Move cable</button>
+        <button type="submit" data-write data-busy-label="Moving…">Move cable</button>
       </form>
     </div>`;
 }

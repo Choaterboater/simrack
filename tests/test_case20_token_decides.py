@@ -383,32 +383,71 @@ def shipped(name: str) -> str:
         return handle.read()
 
 
-class TestTheUiAsksBeforeEachChange(unittest.TestCase):
+class TestTheUiAsksOnlyBeforeUndoingSomething(unittest.TestCase):
     """The UI files as shipped. What the box does when clicked is checked live in a browser."""
+
+    # Each of these undoes, removes or stops something, or pushes config to every switch, so it asks first.
+    ASKS = {"Revert guests", "Revert Mist", "Delete sandbox", "Delete shape", "Delete", "Shut down", "Power off",
+            "Unplug", "Build fabric"}
+    DANGER = {"Revert guests", "Revert Mist", "Delete sandbox", "Delete shape", "Delete", "Power off"}
+    # Each of these saves, adds or starts something, so it just happens.
+    JUST_DOES = {"Save point", "Build sandbox", "Build", "Add guest", "Plug in", "Move cable", "Start", "Send",
+                 "Create Mist site"}
 
     def setUp(self):
         self.js, self.html = shipped("app.js"), shipped("index.html")
-        self.buttons = re.findall(r"<button\b[^>]*>", self.js + self.html)
+        self.buttons = [(tag, text.strip()) for tag, text in re.findall(r"(<button\b[^>]*>)([^<]*)", self.js + self.html)]
 
-    def test_the_box_offers_no_then_this_once_then_this_session(self):
+    def named(self, text):
+        tags = [tag for tag, said in self.buttons if said == text]
+        self.assertTrue(tags, f"a {text} button")
+        return tags
+
+    def test_the_box_offers_cancel_then_the_action(self):
         box = re.search(r'<dialog id="ask".*?</dialog>', self.html, re.S)
-        self.assertIsNotNone(box, "index.html has the yes/no box")
-        choices = re.findall(r'<button[^>]*value="(\w+)"[^>]*>([^<]+)</button>', box.group(0))
-        self.assertEqual(choices, [("no", "1 No"), ("once", "2 Yes, this once"), ("session", "3 Yes for this session")])
-        self.assertIn("autofocus", re.search(r'<button[^>]*value="no"[^>]*>', box.group(0)).group(0), "Enter means No")
+        self.assertIsNotNone(box, "index.html has the box")
+        choices = re.findall(r'<button[^>]*value="(\w+)"[^>]*>([^<]*)</button>', box.group(0))
+        self.assertEqual([value for value, _ in choices], ["no", "yes"])
+        self.assertEqual(choices[0][1], "Cancel")
+        self.assertIn("autofocus", re.search(r'<button[^>]*value="no"[^>]*>', box.group(0)).group(0), "Enter means Cancel")
 
-    def test_every_change_button_asks(self):
-        opens_a_form = ('data-act="new"', 'data-act="cable-from"')
-        changes = [b for b in self.buttons if "data-write" in b and not any(o in b for o in opens_a_form)]
+    def test_a_yes_covers_one_click(self):
+        for gone in ("simrack_ok", "this once", "for this session", "data-ask-always"):
+            self.assertNotIn(gone, self.js + self.html)
+
+    def test_what_undoes_removes_or_stops_something_asks(self):
+        for text in self.ASKS:
+            for tag in self.named(text):
+                self.assertIn("data-ask=", tag, text)
+        for text in self.DANGER:
+            for tag in self.named(text):
+                self.assertIn("data-ask-danger", tag, text)
+
+    def test_saving_adding_or_starting_just_happens(self):
+        for text in self.JUST_DOES:
+            for tag in self.named(text):
+                self.assertNotIn("data-ask", tag, text)
+        adopting = [tag for tag, _ in self.buttons if 'data-act="adopt"' in tag]
+        self.assertTrue(adopting)
+        for tag in adopting:
+            self.assertNotIn("data-ask", tag)
+
+    def test_building_the_fabric_in_mist_asks(self):
+        fabric = [tag for tag, _ in self.buttons if 'data-op="fabric"' in tag]
+        self.assertGreaterEqual(len(fabric), 2)
+        for tag in fabric:
+            self.assertIn('data-ask="mist"', tag)
+
+    def test_every_change_button_is_one_or_the_other(self):
+        named_elsewhere = ('data-act="new"', 'data-act="cable-from"', 'data-act="adopt"', 'data-op="fabric"')
+        changes = [(tag, text) for tag, text in self.buttons if "data-write" in tag and not any(o in tag for o in named_elsewhere)]
         self.assertGreaterEqual(len(changes), 20)
-        for button in changes:
-            self.assertIn("data-ask=", button)
+        for tag, text in changes:
+            self.assertIn(text, self.ASKS | self.JUST_DOES, tag)
 
-    def test_changes_that_destroy_something_ask_every_time(self):
-        destroying = [b for b in self.buttons if re.search(r'data-ask="(teardown|revert|delete)"', b)]
-        self.assertGreaterEqual(len(destroying), 5)
-        for button in destroying:
-            self.assertIn("data-ask-always", button)
+    def test_saved_points_list_the_newest_first(self):
+        self.assertRegex(self.js, r"fillPoints\(\$\(\"\[data-pve-snaps\]\"\), s\.proxmox_snapshots\)")
+        self.assertRegex(self.js, r"fillPoints\(\$\(\"\[data-mist-snaps\]\"\), s\.mist_snapshots\)")
 
     def test_nothing_asks_to_type_a_name_or_click_twice(self):
         for gone in ("data-confirm", "confirmed(", "Type the sandbox name", "confirm: true"):

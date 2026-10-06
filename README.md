@@ -26,8 +26,8 @@ fakes; only part of it has run on a real host.
 | Drive | building the sandbox's fabric in Mist, checking the cabling three ways | yes, for an IP Clos slice: every switch committed, underlay and EVPN overlay BGP up, cabling checked. Not yet for collapsed core or ESI-LAG. |
 
 The setup page and token-decided access have run on a real host; the MCP server
-has not. Every change asks first, so look around before you answer Yes, and
-read `ADVICE.md` before the first build.
+has not. Anything that undoes, removes or stops something asks first, so look
+around before you confirm, and read `ADVICE.md` before the first build.
 
 ## What it does
 
@@ -51,10 +51,13 @@ read `ADVICE.md` before the first build.
 | **Setup** | The tokens and the lab profile: what is live, the management network, the sandbox ranges, what an assistant may do. It opens by itself until a profile is saved. See [The lab profile](#the-lab-profile). |
 | **Pause / Resume** | Stops every change until you resume, even across restarts; looking still works. A build under way stops at its next step and removes what it made. |
 
-Every button that changes something asks first: **1 No · 2 Yes, this once · 3 Yes
-for this session**, and Enter or Esc is No. Tear down, revert, power off, delete
-and setup saves ask every time. A change SimRack may not make right now has its
-button turned off, and the top bar says why.
+Saving, building, adding, starting, plugging in, adopting and console commands
+just happen. Revert, tear down, delete, unplug, shut down, power off, Build
+fabric, Check cabling (when it may put cables back) and importing a lab profile
+ask first, every time: **Cancel** or the action, such as **Revert Mist**, and
+Enter or Esc is Cancel. Saved points are listed newest first, and one you just
+saved is picked. A change SimRack may not make right now has its button turned
+off, and the top bar says why.
 
 ## The lab profile
 

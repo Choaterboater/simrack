@@ -674,12 +674,19 @@ class TestTheSetupPageAsShipped(unittest.TestCase):
         top = re.search(r'<div class="top".*?\n</div>', self.html, re.S)
         self.assertRegex(top.group(0), r'<button[^>]*data-act="setup"')
 
-    def test_saving_setup_asks_every_time_and_works_while_changes_are_off(self):
-        saving = [b for b in self.buttons if 'data-ask="setup"' in b]
-        self.assertGreaterEqual(len(saving), 3, "saving the connection, saving the lab profile, importing one")
+    def test_saving_setup_just_saves_and_works_while_changes_are_off(self):
+        saving = [b for b in self.buttons if re.search(r'data-op="save-(tokens|lab)"', b)]
+        self.assertEqual(len(saving), 2, "saving the connection, saving the lab profile")
         for button in saving:
-            self.assertIn("data-ask-always", button)
+            self.assertNotIn("data-ask", button)
             self.assertNotIn("data-write", button, "a read-only SimRack is set up from this page")
+
+    def test_importing_a_profile_asks_because_it_replaces_the_saved_one(self):
+        importing = [b for b in self.buttons if 'data-act="setup-import"' in b]
+        self.assertEqual(len(importing), 1)
+        self.assertIn('data-ask="setup"', importing[0])
+        self.assertIn("data-ask-danger", importing[0])
+        self.assertNotIn("data-write", importing[0], "a read-only SimRack is set up from this page")
 
     def test_tokens_are_typed_into_fields_that_hide_them(self):
         for name in ("proxmox_token", "mist_token"):

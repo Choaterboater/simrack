@@ -16,7 +16,7 @@ Everything in this document follows from that.
 | 1. Set SimRack up on its setup page: its Proxmox token, then what is live | SimRack refuses anything ticked as live, and changes nothing until the page is saved. | 30 min |
 | 2. Make a clean vJunos **template** in the sandbox range (320 by default) | Every sandbox clones from it. Never clone a booted vJunos. | 1 session |
 | 3. Prove two clones get **different serials** | Mist keys on serial. If they collide, the whole plan stops here. | 30 min, do it before anything else |
-| 4. Look before you change | Confirm the page lists your live lab as protected. Every change asks first, and **Pause** stops them all. | 10 min |
+| 4. Look before you change | Confirm the page lists your live lab as protected. Anything that undoes, removes or stops something asks first, and **Pause** stops every change. | 10 min |
 | 5. One sandbox, `single-switch` recipe | Cheapest proof (~5 GB). | 30 min |
 | 6. `collapsed-core`, then `ip-clos` | The real thing. | 1 hour |
 | 7. Mist site per sandbox + revert button | The part people actually break. | 1 hour |
