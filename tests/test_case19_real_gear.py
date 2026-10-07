@@ -44,7 +44,7 @@ def wire(client, call, body=None):
 
     def fake_urlopen(request, timeout, context):
         form = urllib.parse.parse_qs((request.data or b"").decode())
-        sent.append({"method": request.get_method(), "url": request.full_url, "form": form, "context": context})
+        sent.append({"method": request.get_method(), "url": request.full_url, "form": form, "data": request.data, "context": context})
         return Reply() if body is None else Reply(body)
 
     with mock.patch("urllib.request.urlopen", fake_urlopen):
@@ -422,6 +422,19 @@ class TestMistRevertTopologies(unittest.TestCase):
         shut = MistClient(Settings(mist_token="t", org_id="org-1"), write_gate=lambda: (GuardrailViolation, "Changes are paused.", ""))
         with mock.patch("urllib.request.urlopen") as urlopen, self.assertRaises(GuardrailViolation):
             shut.delete_evpn_topology("s1", "t1")
+        urlopen.assert_not_called()
+
+    def test_the_client_releases_switches_only_when_its_write_gate_allows(self):
+        client = MistClient(Settings(mist_token="t", org_id="org-1"), write_gate=lambda: None)
+        answer = {"op": "delete", "success": ["SBX000000001"], "error": [], "reason": []}
+        replies = []
+        sent = wire(client, lambda c: replies.append(c.release_devices(["SBX000000001"])), json.dumps(answer).encode())
+        self.assertEqual([(s["method"], urllib.parse.urlparse(s["url"]).path) for s in sent], [("PUT", "/api/v1/orgs/org-1/inventory")])
+        self.assertEqual(json.loads(sent[0]["data"]), {"op": "delete", "serials": ["SBX000000001"]})
+        self.assertEqual(replies, [answer], "Mist's reply comes back whole: what it released, what it kept and why")
+        shut = MistClient(Settings(mist_token="t", org_id="org-1"), write_gate=lambda: (GuardrailViolation, "Changes are paused.", ""))
+        with mock.patch("urllib.request.urlopen") as urlopen, self.assertRaises(GuardrailViolation):
+            shut.release_devices(["SBX000000001"])
         urlopen.assert_not_called()
 
 

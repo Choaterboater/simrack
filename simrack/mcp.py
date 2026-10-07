@@ -337,7 +337,9 @@ TOOLS = (
     _sandbox_tool(
         "tear_down",
         "Tear down a sandbox",
-        "Deletes the sandbox: its switches, its cables and, unless keep_mist, its Mist site.",
+        "Deletes the sandbox: its switches, its cables and, unless keep_mist, its Mist site, after deleting the "
+        "site's fabric topology and releasing its vJunos switches from the org. If anything is refused, the sandbox "
+        "stays listed and the result says why: call again once it is fixed.",
         "POST",
         "/teardown",
         gate="risky",

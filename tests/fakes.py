@@ -390,6 +390,10 @@ class FakeMist:
         #: Mist refuses GET /orgs/{id} with this status, e.g. 403 for a token it hides the org from.
         self.org_status: int | None = None
         self.site_records: dict[str, dict] = {}
+        #: The org's inventory, by serial: every switch adopted into the org, assigned to a site or not.
+        self.inventory: dict[str, dict] = {}
+        #: serial -> why Mist answers a release of it with an error (Mist still answers 200)
+        self.keep_serials: dict[str, str] = {}
         self.settings_by_site: dict[str, dict] = {}
         self.topologies: dict[str, list[dict]] = {}
         self.devices_by_site: dict[str, list[dict]] = {}
@@ -481,9 +485,47 @@ class FakeMist:
         return self.site_records[site_id]
 
     def delete_site(self, site_id):
+        """As on Oct 7 2026: Mist answers 400 while the site still has a fabric topology or switches."""
         self._guard("delete_site")
         self._log("delete_site", site_id)
+        if self.topologies.get(site_id) or self.devices_by_site.get(site_id):
+            from simrack.errors import BackendError
+
+            raise BackendError(
+                f"Mist API DELETE /sites/{site_id} failed (400).",
+                detail='{"detail": "fake: the site still has switches or a fabric topology"}',
+                status=400,
+            )
         self.site_records.pop(site_id, None)
+
+    def release_devices(self, serials, org_id=None):
+        """PUT /orgs/{org}/inventory with op delete. Mist answers 200 and lists, serial by serial,
+        what it released and what it kept and why. It keeps a switch still in a fabric topology."""
+        self._guard("release_devices")
+        self._log("release_devices", sorted(serials))
+        reply = {"op": "delete", "success": [], "error": [], "reason": []}
+        for serial in serials:
+            record = self.inventory.get(serial)
+            site = (record or {}).get("site_id")
+            mac = re.sub(r"[^0-9a-f]", "", str((record or {}).get("mac", "")).lower())
+            in_fabric = any(
+                re.sub(r"[^0-9a-f]", "", str(s.get("mac", "")).lower()) == mac
+                for t in self.topologies.get(site, []) for s in t.get("switches", [])
+            )
+            why = (
+                "fake: not in this org's inventory" if record is None
+                else "fake: still in an EVPN topology" if in_fabric
+                else self.keep_serials.get(serial)
+            )
+            if why:
+                reply["error"].append(serial)
+                reply["reason"].append(why)
+                continue
+            del self.inventory[serial]
+            if site:
+                self.devices_by_site[site] = [d for d in self.devices_by_site.get(site, []) if d.get("serial") != serial]
+            reply["success"].append(serial)
+        return reply
 
     def site_setting(self, site_id):
         self._read()
@@ -603,12 +645,16 @@ class FakeMist:
         self._log("adopt_config", org_id, site_id=site_id)
         return {"cmd": self.ADOPT_CMD}
 
-    def add_switch(self, site_id, name, *, device_id=None, config=None, mac=None):
-        """A switch adopted into the site, the way Mist lists it: id, name and MAC."""
+    def add_switch(self, site_id, name, *, device_id=None, config=None, mac=None, model="VJUNOS"):
+        """A switch adopted into the site, the way Mist lists it: id, name, MAC, serial and model.
+        It is in the org's inventory too, assigned to the site."""
         device_id = device_id or f"dev-{name}"
         self._macs += 1
         mac = mac or f"5c5b3500{self._macs:04x}"
-        self.devices_by_site.setdefault(site_id, []).append({"id": device_id, "name": name, "mac": mac, "connected": True})
+        serial = f"SBX{self._macs:09d}"
+        row = {"id": device_id, "name": name, "mac": mac, "serial": serial, "model": model, "type": "switch", "connected": True}
+        self.devices_by_site.setdefault(site_id, []).append(row)
+        self.inventory[serial] = {"serial": serial, "mac": mac, "name": name, "model": model, "type": "switch", "site_id": site_id}
         config = dict(config or {"port_config": {}, "name": name})
         config.setdefault("mac", mac)
         self.device_config[(site_id, device_id)] = config

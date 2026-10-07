@@ -94,6 +94,14 @@ class MistClient:
     def delete_site(self, site_id: str) -> None:
         self._request("DELETE", f"/sites/{site_id}", write=True)
 
+    def release_devices(self, serials: list[str], org_id: str | None = None) -> dict:
+        """Release devices from the org's inventory by serial, which also takes them off their site.
+        Mist answers 200 even when it keeps some: ``success`` lists the serials it released,
+        ``error`` the ones it kept, with a ``reason`` each."""
+        body = {"op": "delete", "serials": list(serials)}
+        reply = self._request("PUT", f"/orgs/{org_id or self.org_id}/inventory", body, write=True)
+        return reply if isinstance(reply, dict) else {}
+
     def site_setting(self, site_id: str) -> dict:
         return self._request("GET", f"/sites/{site_id}/setting") or {}
 

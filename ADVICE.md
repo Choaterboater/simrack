@@ -102,13 +102,20 @@ thing people are shown.
 
 In the front end: open the sandbox, **Tear down**. That deletes the sandbox
 guests, its bridges and its Mist site, and leaves the template and the live lab
-alone. Behind the scenes it is the same as:
+alone. Mist deletes a site only once it holds no fabric and no switches, so
+Tear down first deletes the site's EVPN topology, then releases its vJunos
+switches from the org's inventory (each clone had its own serial, gone with its
+VM), then deletes the site. A switch that is not a vJunos is left alone, so Mist
+keeps the site. If Mist refuses any step, the sandbox stays listed and the
+result gives Mist's reason: fix it and tear down again, or tick **Keep its Mist
+site** to finish without touching Mist. Behind the scenes it is the same as:
 
 ```bash
 # what teardown does, so you can do it by hand if the UI is down
 qm stop <vmid>; qm destroy <vmid> --purge
 ip link del sbx<vm>_<vm>_<ports>          # one per cable
-# delete the sandbox Mist site in the UI
+# in Mist, in this order: delete the site's EVPN topology, release its
+# switches (Organization > Inventory), then delete the site
 ```
 
 If you must reset the host networking after a bad cable change:
@@ -238,9 +245,13 @@ border router means the border path is broken, not Mist.
 - No client traffic has crossed a built fabric. No recipe makes client
   containers yet, and the `clients` port has no cable, so it stays parked and
   down; the commit does not need it up.
-- Tear down deletes the sandbox's Mist site, but its switches stay in the org's
-  inventory, unassigned and disconnected. Release them there (Organization →
-  Inventory) so they do not pile up.
+- The first teardowns on real gear left both Mist sites behind: Mist answers
+  400 to a site delete while the site still has a fabric topology or switches,
+  and the page did not say so. Tear down now deletes the topology and releases
+  the vJunos switches first, checks the release reply (Mist answers 200 even
+  when it keeps a switch; its `error` and `reason` lists say which and why), and
+  keeps the sandbox listed when Mist refuses. Not yet run against real Mist:
+  watch the first one.
 - A switch booted from an image gets `smbios1` product `VM-VEX` and `cpu: host`
   instead of the root-only `args` line in step 2. Whether vJunos runs that way
   is unverified: check the first one reaches the Junos prompt.

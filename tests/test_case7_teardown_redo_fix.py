@@ -52,6 +52,56 @@ class TestTeardownRedoAndFix(unittest.TestCase):
         self.assertIsNone(kept["mist_site"])
         self.assertIn(self.sandbox.mist_site_id, self.mist.site_records, "keep_mist leaves the site for inspection")
 
+    def adopt_and_build_fabric(self):
+        site = self.sandbox.mist_site_id
+        for node in self.sandbox.nodes:
+            self.mist.add_switch(site, node.name)
+        self.manager.mist_build_fabric(self.sandbox)
+        return site, {d["name"]: d["serial"] for d in self.mist.devices(site)}
+
+    def test_teardown_clears_the_fabric_and_releases_the_switches_so_mist_lets_the_site_go(self):
+        site, serials = self.adopt_and_build_fabric()
+        removed = self.manager.teardown(self.sandbox)
+        self.assertTrue(removed["complete"], removed)
+        self.assertEqual(removed["mist_site"], self.sandbox.mist_site_name)
+        self.assertNotIn(site, self.mist.site_records)
+        self.assertEqual(sorted(removed["mist_switches"]), sorted(f"{name} ({serial})" for name, serial in serials.items()))
+        for serial in serials.values():
+            self.assertNotIn(serial, self.mist.inventory, "each clone had its own serial, so it is released from the org")
+        self.assertNotIn("rebuild", self.manager.sandboxes)
+
+    def test_a_site_mist_will_not_delete_keeps_the_sandbox_listed_with_mists_reason(self):
+        site, serials = self.adopt_and_build_fabric()
+        self.mist.add_switch(site, "closet-ex4100", model="EX4100-48P")
+        removed = self.manager.teardown(self.sandbox)
+        self.assertFalse(removed["complete"])
+        self.assertIn("left in place", removed["mist_site"])
+        self.assertIn("still has switches", removed["mist_site"], "Mist's own reason is shown")
+        self.assertIn("rebuild", self.manager.sandboxes, "the record stays so Tear down can run again")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "sandboxes", "rebuild.json")))
+        self.assertIn(site, self.mist.site_records)
+        self.assertEqual([d["name"] for d in self.mist.devices(site)], ["closet-ex4100"], "only vJunos switches are released")
+        for serial in serials.values():
+            self.assertNotIn(serial, self.mist.inventory)
+
+        self.mist.devices_by_site[site] = []  # someone moves the real switch to a site of its own
+        again = self.manager.teardown(self.manager.get("rebuild"))
+        self.assertTrue(again["complete"], again)
+        self.assertEqual(again["mist_site"], "Sandbox rebuild")
+        self.assertNotIn(site, self.mist.site_records)
+        self.assertNotIn("rebuild", self.manager.sandboxes)
+
+    def test_a_switch_mist_will_not_release_is_named_with_mists_reason(self):
+        site, serials = self.adopt_and_build_fabric()
+        self.mist.keep_serials[serials["sbx-core-01"]] = "fake: device is locked"
+        removed = self.manager.teardown(self.sandbox)
+        self.assertFalse(removed["complete"])
+        self.assertIn("sbx-core-01", removed["mist_site"])
+        self.assertIn("fake: device is locked", removed["mist_site"])
+        self.assertEqual(removed["mist_switches"], [f"sbx-acc-01 ({serials['sbx-acc-01']})"], "what was released is still told")
+        self.assertNotIn("delete_site", [call[0] for call in self.mist.calls], "a site that still has a switch is not asked to go")
+        self.assertIn(site, self.mist.site_records)
+
     def test_the_lab_can_be_rebuilt_immediately_after_teardown(self):
         first_site = self.sandbox.mist_site_id
         self.manager.teardown(self.sandbox)
@@ -82,8 +132,12 @@ class TestTeardownRedoAndFix(unittest.TestCase):
 
     def test_teardown_refuses_to_reach_the_live_mist_site(self):
         self.sandbox.mist_site_id = sorted(self.live.production_mist_sites)[0]
+        self.mist.calls.clear()
         removed = self.manager.teardown(self.sandbox)
         self.assertIn("left in place", removed["mist_site"])
+        self.assertEqual(self.mist.calls, [], "nothing is written to the live site: no topology, switch or site")
+        self.assertFalse(removed["complete"])
+        self.assertIn("rebuild", self.manager.sandboxes)
 
     def test_the_runbook_answers_tear_down_rebuild_and_fix(self):
         self.assertTrue(os.path.exists(ADVICE), "ADVICE.md must ship with the project")

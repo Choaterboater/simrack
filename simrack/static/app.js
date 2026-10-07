@@ -968,7 +968,7 @@ function shell(s) {
 
   <section class="teardown" aria-labelledby="sec-tear">
     <h2 class="sec bad" id="sec-tear">Tear down</h2>
-    <p class="note" style="margin-bottom:1rem">Stops and deletes every guest, then removes its bridges. If anything cannot be deleted, the sandbox stays listed so you can retry.</p>
+    <p class="note" style="margin-bottom:1rem">Stops and deletes every guest and removes its bridges. Then it deletes the Mist site, after its fabric and releasing its switches from the org. If anything cannot be deleted, the sandbox stays listed so you can retry.</p>
     <form class="fields line" data-form="teardown" autocomplete="off">
       <label class="check"><input type="checkbox" name="keep_mist"> Keep its Mist site</label>
       <button type="submit" class="danger solid" data-write data-ask="teardown" data-ask-danger data-busy-label="Tearing down…">Delete sandbox</button>
@@ -1669,7 +1669,7 @@ document.addEventListener("submit", e => {
     case "teardown": {
       const name = s.name, keep = f.keep_mist.checked, plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
       btn.dataset.askWhy = `${plural(s.nodes.length, "guest")} and ${plural(s.links.length, "cable")} are destroyed`
-        + (s.mist_site_id ? keep ? "; the Mist site stays." : ", and so is its Mist site." : ".") + " This can't be undone.";
+        + (s.mist_site_id ? keep ? "; the Mist site stays." : ", and so is its Mist site, with its fabric and switches." : ".") + " This can't be undone.";
       run(btn, `Tear down ${name}`, () => api(`${base}/teardown`, { keep_mist: keep }), r => {
         if (r && r.complete === false) note("err", `${name} was only partly removed. It is still listed; fix the cause and tear down again.`, r);
         else { sel = ""; localStorage.removeItem("lf_sel"); }

@@ -43,7 +43,7 @@ around before you confirm, and read `ADVICE.md` before the first build.
 | **Check cabling** | Checks each cable three ways: Proxmox (both ends on the cable's bridge, link up), LLDP as Mist reports it, and the Mist topology. With writes on it plugs wrong ends back in and parks stray ports; read-only it only reports. It never adds NICs and never writes to Mist. |
 | **Snapshot / Revert Mist** | Saves the site setting, every EVPN topology in full and every device config, and puts them back. A topology made since the snapshot is deleted, and one deleted since is made again. Mist keeps any top-level field a PUT leaves out, so a setting made since goes back empty; a yes/no or a number made since stays, and the notes name it. Mist never takes an Additional CLI line back off a switch, so a line it stops sending stays there; the notes and `cli_left_on_switch` name each one (a line with a secret is counted, not shown). Root passwords stay out of the file; revert puts the sandbox's own password back, and never empties it out of Mist. |
 | **Health** | Reads device connection and `config_status` from Mist. |
-| **Tear down** | Deletes the guests, the bridges and the Mist site. Never the live lab. |
+| **Tear down** | Deletes the guests and the bridges, then the sandbox's Mist site the way Mist allows: its fabric topology first, then its vJunos switches released from the org's inventory, then the site. Never the live lab. If Mist refuses a step, the sandbox stays listed with Mist's reason: fix it and tear down again, or tick **Keep its Mist site**. |
 | **Import (Shapes)** | Reads a Mist EVPN topology you paste or drop, and previews it as a sandbox plan: switches, cabling, and whether it fits on the host. Nothing is built and nothing is sent to Mist. |
 | **Build (Shapes)** | Builds a sandbox from a shape: the switches you tick, cabled the way Mist saw them, plus an optional Mist site of its own. When the whole shape doesn't fit, a slice with a switch from each tier is pre-ticked. Cables that can't be made are left out and listed with the reason. |
 | **Adopt into Mist** | Logs in over the switch's serial console, sets the sandbox's root password, turns on DHCP on fxp0 and enters the sandbox site's adoption commands. If Junos refuses a line, the change is rolled back. Needs SimRack to be able to change both the lab and Mist, and the sandbox's own Mist site. |
@@ -158,7 +158,8 @@ the tests prove it:
   guest disks such as `vm-100-disk-0` are refused
 - every async Proxmox task (clone, import, stop, delete, rollback) is waited on;
   running guests are stopped before delete; a teardown that cannot delete
-  everything keeps the sandbox record and its Mist site so it can be retried
+  everything, in Proxmox or in Mist, keeps the sandbox record and its Mist site
+  so it can be retried
 - a failed build step deletes only a guest that step created, never one already
   at that vmid; when Proxmox cannot list its guests, SimRack refuses rather than
   assume a vmid is free

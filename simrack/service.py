@@ -1768,7 +1768,7 @@ class SandboxManager:
     def teardown(self, sandbox: Sandbox, *, keep_mist: bool = False) -> dict:
         """Undo a whole sandbox. The live lab is never in scope."""
         self.access.check_lab()
-        removed = {"nodes": [], "bridges": [], "mist_site": None, "complete": True, "failed": []}
+        removed = {"nodes": [], "bridges": [], "mist_site": None, "mist_switches": [], "complete": True, "failed": []}
         # Guests first: deleting them drops their taps, so no NIC hot-unplug is needed.
         for node in list(sandbox.nodes):
             try:
@@ -1800,10 +1800,20 @@ class SandboxManager:
             try:
                 self.guard.check_site(sandbox.mist_site_id)
                 self.access.check_mist()
+                self._empty_mist_site(sandbox.mist_site_id, removed["mist_switches"])
                 self.mist.delete_site(sandbox.mist_site_id)
                 removed["mist_site"] = sandbox.mist_site_name
             except LabError as error:
-                removed["mist_site"] = f"left in place: {error.message}"
+                reason = f"{error.message} {error.detail}" if error.detail else error.message
+                removed["mist_site"] = f"left in place: {reason}"
+                removed["complete"] = False
+                removed["failed"].append(
+                    f"Mist site {sandbox.mist_site_name}: {reason} Fix that and tear down again, "
+                    "or tick Keep its Mist site to finish without it."
+                )
+                sandbox.notes.append("Teardown incomplete: " + "; ".join(removed["failed"]))
+                self._save(sandbox)
+                return removed
         self.sandboxes.pop(sandbox.name, None)
         path = self._path(sandbox.name)
         if os.path.exists(path):
@@ -1812,6 +1822,31 @@ class SandboxManager:
         shutil.rmtree(self._mist_snapshot_dir(sandbox.name), ignore_errors=True)
         self._drop_park_if_unused()
         return removed
+
+    def _empty_mist_site(self, site_id: str, released: list[str]) -> None:
+        """Mist deletes a site only once it holds no fabric topology and no switches. Delete
+        the topologies, then release the vJunos switches from the org: each clone had its own
+        serial, which went with its VM. Any other switch stays, so Mist keeps the site.
+        Each switch released is added to ``released``."""
+        for topology in self.mist.evpn_topologies(site_id):
+            self.mist.delete_evpn_topology(site_id, topology["id"])
+        switches = {
+            d["serial"]: d.get("name") or d["serial"]
+            for d in self.mist.devices(site_id, "switch")
+            if d.get("serial") and str(d.get("model") or "").upper() == "VJUNOS"
+        }
+        if switches:
+            reply = self.mist.release_devices(sorted(switches)) or {}
+            done = set(reply.get("success") or [])
+            released.extend(f"{switches[serial]} ({serial})" for serial in sorted(switches) if serial in done)
+            kept = [serial for serial in sorted(switches) if serial not in done]
+            if kept:
+                # Mist answers 200 even when it keeps some: the error and reason lists say which and why.
+                reasons = dict(zip(reply.get("error") or [], reply.get("reason") or []))
+                raise BackendError(
+                    f"Mist did not release {', '.join(switches[serial] for serial in kept)}.",
+                    detail="; ".join(f"{switches[serial]} ({serial}): {reasons.get(serial) or 'no reason given'}" for serial in kept),
+                )
 
     # -- console ----------------------------------------------------------------
 
